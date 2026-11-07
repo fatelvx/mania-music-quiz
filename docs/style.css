@@ -136,3 +136,4 @@ button.small { padding: 4px 10px; font-size: 13px; }
   font-size: 96px; font-weight: 800; color: var(--accent); background: rgba(12,11,16,.7);
 }
 #lobbySummary p { margin: 4px 0; }
+.diag { white-space: pre-wrap; font: 13px/1.6 inherit; font-family: inherit; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0 0; }

@@ -39,10 +39,66 @@ window.MP = (() => {
   const netStatus = t => { $('#lobbyNet').textContent = t; };
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+  // ---------- ICE (STUN/TURN) ----------
+  // PeerJS's built-in TURN servers are gone, so we bring our own (see config.js)
+  const BASE_ICE = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+  let iceServers = null;
+  async function getIce() {
+    if (iceServers) return iceServers;
+    const cfg = window.MMQ_CONFIG || {};
+    let list = [...BASE_ICE, ...(cfg.extraIceServers || [])];
+    if (cfg.turnCredentialsUrl) {
+      try { const r = await fetch(cfg.turnCredentialsUrl); if (r.ok) list = list.concat(await r.json()); } catch (e) { console.warn('TURN credentials fetch failed', e); }
+    }
+    return (iceServers = list);
+  }
+  const isTurn = u => /^turns?:/.test(u);
+  const hasTurn = () => (iceServers || []).some(s => [].concat(s.urls).some(isTurn));
+
+  // Gather candidates once to learn what kind of network this is.
+  async function gather(servers, relayOnly) {
+    const pc = new RTCPeerConnection({ iceServers: servers, iceTransportPolicy: relayOnly ? 'relay' : 'all' });
+    pc.createDataChannel('probe');
+    const cands = [];
+    pc.onicecandidate = e => { if (e.candidate && e.candidate.candidate) cands.push(e.candidate); };
+    await pc.setLocalDescription(await pc.createOffer());
+    await new Promise(r => { const t = setTimeout(r, 6000); pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') { clearTimeout(t); r(); } }; });
+    pc.close();
+    return cands;
+  }
+
+  async function diagnose() {
+    const out = $('#mpDiag');
+    show(out); out.textContent = '測試中…（約 10 秒）';
+    const ice = await getIce();
+    // two different STUN servers: if the same local socket shows up with different public ports,
+    // the NAT is "symmetric" and direct connections to other strict NATs will fail
+    const srflx = (await gather([{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun.cloudflare.com:3478' }]))
+      .filter(c => c.type === 'srflx' && c.protocol === 'udp');
+    // compare per public address (IPv4 and IPv6 each get their own port)
+    const portsByAddr = new Map();
+    for (const c of srflx) { if (!portsByAddr.has(c.address)) portsByAddr.set(c.address, new Set()); portsByAddr.get(c.address).add(c.port); }
+    const symmetric = [...portsByAddr.values()].some(set => set.size > 1);
+    const lines = [];
+    let nat;
+    if (!srflx.length) { nat = 'blocked'; lines.push('❌ 你的網路擋住了 UDP，沒辦法直連，一定要靠中繼伺服器。'); }
+    else if (symmetric) { nat = 'symmetric'; lines.push('⚠️ 你的 NAT 是「嚴格型」（對稱式）。跟同樣嚴格的人直連會失敗，需要中繼伺服器。手機網路、學校或公司網路常見這種。'); }
+    else { nat = 'ok'; lines.push('✅ 你的網路可以直連（寬鬆型 NAT）。'); }
+    const turnServers = ice.filter(sv => [].concat(sv.urls).some(isTurn));
+    if (!turnServers.length) lines.push('➖ 中繼伺服器（TURN）：還沒設定。' + (nat === 'ok' ? '你這邊沒問題，連不上的話是對方的網路比較嚴格。' : ''));
+    else {
+      const relay = (await gather(turnServers, true)).filter(c => c.type === 'relay');
+      lines.push(relay.length ? '✅ 中繼伺服器（TURN）：可用，就算直連失敗也能透過它連線。' : '❌ 中繼伺服器（TURN）：有設定但連不上。');
+    }
+    out.textContent = lines.join('\n');
+  }
+
   // ---------- peers ----------
   function makePeer(id) {
     return new Promise((res, rej) => {
-      const p = new Peer(id, { debug: 1 });
+      // ?relay=1 forces everything through TURN (to verify the relay works)
+      const relayOnly = new URLSearchParams(location.search).get('relay') === '1';
+      const p = new Peer(id, { debug: 1, config: { iceServers: iceServers || BASE_ICE, ...(relayOnly ? { iceTransportPolicy: 'relay' } : {}) } });
       const onErr = e => { p.off('open', onOpen); try { p.destroy(); } catch {} rej(e); };
       const onOpen = () => { p.off('error', onErr); res(p); };
       p.once('open', onOpen);
@@ -129,7 +185,7 @@ window.MP = (() => {
     return new Promise((res, rej) => {
       const c = peer.connect(doorId(room), { reliable: true });
       const done = () => { clearTimeout(to); knockReject = null; };
-      const to = setTimeout(() => { done(); try { c.close(); } catch {} rej(new Error('連線逾時')); }, 10000);
+      const to = setTimeout(() => { done(); try { c.close(); } catch {} const e = new Error('連線逾時'); e.timeout = true; rej(e); }, 12000);
       knockReject = e => { done(); rej(e); };
       c.on('open', () => c.send({ type: 'join', peerId: myId, name: myName }));
       c.on('data', m => { if (m.type === 'welcome') { done(); res(m.st); setTimeout(() => { try { c.close(); } catch {} }, 500); } });
@@ -551,6 +607,7 @@ window.MP = (() => {
   async function begin_(asHost) {
     if (typeof Peer === 'undefined') { status('多人模組載入失敗（PeerJS），重新整理看看'); return; }
     myName = getName(); if (!myName) return;
+    await getIce();
     $('#mpCreateBtn').disabled = $('#mpJoinBtn').disabled = true;
     try {
       if (asHost) {
@@ -575,8 +632,13 @@ window.MP = (() => {
         status('連線中…');
         peer = await makePeer(`${NS}-${room}-${rand(8)}`); myId = peer.id; setupPeer();
         let st = null, lastErr = null;
-        for (let i = 0; i < 4 && !st; i++) {
-          try { st = await knock(); } catch (e) { lastErr = e; status(`${e.message}，重試中…（${i + 1}/4）`); await new Promise(r => setTimeout(r, 2500)); }
+        for (let i = 0; i < 3 && !st; i++) {
+          try { st = await knock(); } catch (e) { lastErr = e; status(`${e.message}，重試中…（${i + 1}/3）`); await new Promise(r => setTimeout(r, 2000)); }
+        }
+        if (!st && lastErr && lastErr.timeout) {
+          throw new Error(hasTurn()
+            ? '找得到房間，但連不上房主。請兩邊都按「連線測試」看看。'
+            : '找得到房間，但你們的網路擋住了直連（常見於手機網路、學校或公司網路）。需要設定中繼伺服器（TURN），按「連線測試」可以看是哪一邊的網路比較嚴格。');
         }
         if (!st) throw lastErr || new Error('加入失敗');
         state = st;
@@ -647,6 +709,7 @@ window.MP = (() => {
     $('#mpJoinBtn').onclick = () => begin_(false);
     $('#mpRoom').addEventListener('keydown', e => { if (e.key === 'Enter') begin_(false); });
     $('#leaveBtn').onclick = leave;
+    $('#mpTestBtn').onclick = () => diagnose().catch(e => { $('#mpDiag').textContent = '測試失敗：' + e.message; });
     $('#mpLeaveHeader').onclick = () => { if (confirm('確定離開房間？')) leave(); };
     $('#copyLinkBtn').onclick = () => { navigator.clipboard?.writeText($('#lobbyLink').href).then(() => { $('#copyLinkBtn').textContent = '已複製'; setTimeout(() => { $('#copyLinkBtn').textContent = '複製連結'; }, 1500); }).catch(() => {}); };
     const single = $('#startBtn').onclick;
