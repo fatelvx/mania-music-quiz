@@ -145,7 +145,7 @@ async function getOsu(id) {
   return null;
 }
 
-function excerpt(text, lengthSec) {
+function excerpt(text, lengthSec, seed = 1) {
   let section = '', keys = 4, preview = -1;
   const objs = [];
   for (const raw of text.split(/\r?\n/)) {
@@ -164,9 +164,28 @@ function excerpt(text, lengthSec) {
   }
   const synced = preview >= 0;
   const start = synced ? preview : Math.round(lengthSec * 1000 * 0.4);
-  const notes = objs.filter(([, t, len]) => t + len >= start && t < start + WINDOW_MS)
-    .map(([c, t, len]) => [c, t - start, len]).sort((a, b) => a[1] - b[1]);
-  return { k: keys, s: synced ? 1 : 0, n: notes };
+  const cut = st => objs.filter(([, t, len]) => t + len >= st && t < st + WINDOW_MS)
+    .map(([c, t, len]) => [c, t - st, len]).sort((a, b) => a[1] - b[1]);
+
+  // extra sections from elsewhere in the song, for "random section" chart questions.
+  // Seeded by the diff id so rebuilding doesn't churn the data.
+  const rnd = mulberry32(seed);
+  const first = objs.length ? Math.min(...objs.map(o => o[1])) : 0;
+  const last = objs.length ? Math.max(...objs.map(o => o[1] + o[2])) : 0;
+  const taken = [start], extra = [];
+  for (let tries = 0; tries < 60 && extra.length < EXTRA_SECTIONS; tries++) {
+    const st = Math.round(first + rnd() * Math.max(0, last - first - WINDOW_MS));
+    if (taken.some(x => Math.abs(x - st) < WINDOW_MS)) continue;
+    const w = cut(st);
+    if (w.length < (WINDOW_MS / 1000) * 2) continue; // skip breaks and sparse intros
+    taken.push(st); extra.push(w);
+  }
+  return { k: keys, s: synced ? 1 : 0, n: cut(start), w: extra };
+}
+
+const EXTRA_SECTIONS = 3;
+function mulberry32(a) {
+  return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
 
 async function main() {
@@ -206,7 +225,7 @@ async function main() {
       const { s, d } = jobs[i++];
       const cached = fs.existsSync(path.join(OSU_CACHE, `${d.id}.osu`));
       const text = await getOsu(d.id);
-      if (text) charts.get(s.id)[d.id] = excerpt(text, d.length); else failed++;
+      if (text) charts.get(s.id)[d.id] = excerpt(text, d.length, d.id); else failed++;
       done++;
       if (done % 20 === 0 || done === jobs.length) process.stdout.write(`\rcharts ${done}/${jobs.length} (failed ${failed})`);
       if (!cached) await sleep(250);

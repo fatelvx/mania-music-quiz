@@ -66,6 +66,21 @@
         </div>
         <p class="hint" id="modeHint"></p>
       </div>
+      <div class="field" id="sectionField">
+        <label>譜面段落</label>
+        <div class="seg" data-name="section">
+          <button data-v="preview">preview 那段</button>
+          <button data-v="random">🎲 隨機段落</button>
+        </div>
+        <p class="hint">隨機段落會從整首歌裡挑一段，同一首歌每次看到的都不一樣，比較考認譜。</p>
+      </div>
+      <div class="field">
+        <label>計分</label>
+        <div class="seg" data-name="scoring">
+          <button data-v="normal">一般</button>
+          <button data-v="speed">⚡ 搶答（越快分越高，10～2 分）</button>
+        </div>
+      </div>
       <div class="field">
         <label>鍵數</label>
         <div class="seg" data-name="keys">
@@ -123,6 +138,7 @@
         <h2>房間 <span class="room-code" id="lobbyRoom"></span></h2>
         <p class="hint">把房號或連結給朋友：<a id="lobbyLink" href="#"></a> <button id="copyLinkBtn" class="small">複製連結</button></p>
         <ul id="lobbyPlayers" class="players"></ul>
+        <div id="lobbyChatSlot"></div>
         <p class="hint" id="lobbyNet"></p>
         <button id="leaveBtn" class="small">離開房間</button>
       </div>
@@ -179,6 +195,7 @@
           <p class="hint" id="mpNextHint"></p>
         </div>
         <ul id="mpPlayers" class="players mp-side hidden"></ul>
+        <div id="gameChatSlot"></div>
       </div>
     </div>
   </section>
@@ -190,8 +207,15 @@
       <p class="final" id="finalScore"></p>
       <ol id="history"></ol>
       <button id="againBtn" class="primary big">再來一局</button>
+      <div id="resultsChatSlot"></div>
     </div>
   </section>
+
+  <!-- multiplayer chat (moved between lobby / game / results) -->
+  <div id="chat" class="chat hidden">
+    <div id="chatLog" class="chat-log"></div>
+    <input id="chatInput" maxlength="300" autocomplete="off" placeholder="聊天（Enter 送出）· 答案請打在上面的作答框">
+  </div>
 
   <audio id="audio" preload="auto"></audio>
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>

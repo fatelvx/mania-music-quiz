@@ -8,11 +8,11 @@ const renderer = new Chart.Renderer($('#playfield'));
 const MODE_HINT = {
   audio: '播一段官方 preview 音樂，猜曲名。',
   chart: '完全靜音，只看譜面捲動，從 pattern 認出是哪首歌。',
-  hybrid: '前半段只有譜面（答對 2 分），之後才放音樂（答對 1 分）。',
+  hybrid: '前半段只有譜面，之後才放音樂。一般計分：只看譜答對 2 分、有音樂後 1 分。',
 };
 
 // ---------- settings ----------
-const DEFAULTS = { pool: 'pp', mode: 'audio', keys: '4', topN: '250', srMin: 0, srMax: 15, rounds: '10', limit: '20', volume: 0.25, speed: 700 };
+const DEFAULTS = { pool: 'pp', mode: 'audio', section: 'preview', scoring: 'normal', keys: '4', topN: '250', srMin: 0, srMax: 15, rounds: '10', limit: '20', volume: 0.25, speed: 700 };
 let settings = { ...DEFAULTS };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('mmq-settings') || '{}')); } catch {}
 const save = () => { try { localStorage.setItem('mmq-settings', JSON.stringify(settings)); } catch {} };
@@ -65,7 +65,21 @@ function buildSongs() {
 }
 
 // shared settings (synced in multiplayer) vs. local-only ones (volume, speed)
-const SHARED_KEYS = ['pool', 'mode', 'keys', 'topN', 'srMin', 'srMax', 'rounds', 'limit'];
+const SHARED_KEYS = ['pool', 'mode', 'section', 'scoring', 'keys', 'topN', 'srMin', 'srMax', 'rounds', 'limit'];
+
+// scoring: "normal" = 1 point (hybrid: 2 if answered before the music), "speed" = 10 -> 2 the later you answer
+function pointsFor(correct, elapsedMs, limitMs, mode, scoring) {
+  if (!correct) return 0;
+  if (scoring === 'speed') return Math.max(2, Math.round(10 - 8 * Math.min(1, Math.max(0, elapsedMs) / limitMs)));
+  return mode === 'hybrid' && elapsedMs < limitMs / 2 ? 2 : 1;
+}
+const maxPoints = (rounds, mode, scoring) => rounds * (scoring === 'speed' ? 10 : mode === 'hybrid' ? 2 : 1);
+
+// pick which part of the chart to show: the preview part (synced with the music) or another section
+function questionNotes(chart, mode, section, r = Math.random()) {
+  if (mode === 'chart' && section === 'random' && chart.sections.length) return { notes: chart.sections[Math.floor(r * chart.sections.length)], synced: false };
+  return { notes: chart.notes, synced: chart.synced };
+}
 const onSettingsChanged = () => { if (window.MP && MP.active) MP.onSettingsChanged(); };
 
 const INF = Infinity;
@@ -124,6 +138,7 @@ const POOL_HINT = {
 function refreshSetupInfo() {
   $('#modeHint').textContent = MODE_HINT[settings.mode];
   $('#poolHint').textContent = POOL_HINT[settings.pool] || '';
+  show($('#sectionField'), settings.mode === 'chart');
   const n = eligibleSets().length;
   $('#poolInfo').textContent = `符合條件的圖組：${n} 組` + (n < Number(settings.rounds) ? '（不夠出題，放寬條件看看）' : '');
   $('#startBtn').disabled = n === 0;
@@ -185,9 +200,10 @@ async function nextRound() {
   if (myRound !== round) return;
 
   if (round.chart) {
-    round.synced = round.chart.synced;
-    round.chartStart = 0; // excerpts are pre-cut to start at the preview point
-    renderer.load(round.chart);
+    const q = questionNotes(round.chart, mode, settings.section);
+    round.synced = q.synced;
+    round.chartStart = 0; // excerpts are pre-cut to start at their section
+    renderer.load({ keys: round.chart.keys, notes: q.notes });
   }
   $('#prompt').textContent = mode === 'audio' ? '這是什麼歌？' : mode === 'chart' ? '這張譜是哪首歌？' : '這張譜是哪首歌？（還沒放音樂）';
   $('#answer').disabled = false; $('#answer').focus();
@@ -216,7 +232,8 @@ async function loadChart(setId, diffId) {
   try { all = await chartCache.get(setId); } catch (e) { chartCache.delete(setId); throw e; }
   const ex = all[diffId];
   if (!ex) throw new Error('譜面載入失敗');
-  return { keys: ex.k, synced: !!ex.s, notes: ex.n.map(([col, time, len]) => ({ col, time, end: time + len })) };
+  const conv = arr => arr.map(([col, time, len]) => ({ col, time, end: time + len }));
+  return { keys: ex.k, synced: !!ex.s, notes: conv(ex.n), sections: (ex.w || []).map(conv) };
 }
 
 function silentClock() {
@@ -263,18 +280,23 @@ function answer(text) {
   hideSuggest();
   const { set, diff } = round;
   const correct = checkAnswer(text, set);
-  const pts = !correct ? 0 : round.phase === 1 ? 2 : 1;
+  const elapsed = performance.now() - round.t0;
+  const pts = pointsFor(correct, elapsed, round.limitMs, round.mode, settings.scoring);
   game.score += pts;
   game.history.push({ set, diff, correct, pts, guess: text });
   $('#scoreLabel').textContent = game.score;
 
   // reveal: let the music play (and the chart sync to it if possible)
-  if (round.mode !== 'audio' && audio.paused) { round.phase = 2; show($('#phaseTag'), false); startSyncedChart(); }
+  if (round.mode !== 'audio' && audio.paused) {
+    // switch to the preview part so the chart lines up with the music
+    if (round.chart) { renderer.load(round.chart); round.synced = round.chart.synced; }
+    round.phase = 2; show($('#phaseTag'), false); startSyncedChart();
+  }
   show($('#phaseTag'), false);
   show($('#questionArea'), false); show($('#revealArea'));
   const v = $('#verdict');
   v.className = 'verdict ' + (correct ? 'good' : 'bad');
-  v.textContent = correct ? `答對！ +${pts}` : text == null ? (performance.now() - round.t0 >= round.limitMs ? '時間到' : '放棄') : `答錯（你答：${text}）`;
+  v.textContent = correct ? `答對！ +${pts}（${(elapsed / 1000).toFixed(1)} 秒）` : text == null ? (performance.now() - round.t0 >= round.limitMs ? '時間到' : '放棄') : `答錯（你答：${text}）`;
   fillRevealCard(set, diff);
   $('#nextBtn').focus();
 }
@@ -283,7 +305,7 @@ function finish() {
   stopRound();
   round = null;
   go('results');
-  const max = game.picks.length * (settings.mode === 'hybrid' ? 2 : 1);
+  const max = maxPoints(game.picks.length, settings.mode, settings.scoring);
   const correctN = game.history.filter(h => h.correct).length;
   $('#finalScore').textContent = `${game.score} / ${max} 分 · 答對 ${correctN} / ${game.picks.length} 題`;
   const ol = $('#history'); ol.innerHTML = '';

@@ -26,6 +26,8 @@ window.MP = (() => {
   let hostTimer = 0, hbTimer = 0, doorTimer = 0, allTimer = 0;
   let playback = null;
   let SET_BY_ID = null;
+  const chatLog = [], chatSeen = new Set();
+  let announced = null; // last players/host snapshot, for join/leave/host messages
   const evlog = [];
   const log = (...a) => { const nm = id => (player(id) || { name: String(id).slice(-4) }).name; evlog.push(new Date().toISOString().slice(17, 23) + ' ' + a.map(x => (typeof x === 'string' && x.startsWith(NS) ? nm(x) : x)).join(' ')); if (evlog.length > 100) evlog.shift(); };
 
@@ -176,7 +178,7 @@ window.MP = (() => {
     c.on('data', m => {
       if (m.type !== 'join' || !amHost()) return;
       hostAddPlayer(m.peerId, m.name);
-      c.send({ type: 'welcome', st: state });
+      c.send({ type: 'welcome', st: state, chat: chatLog.filter(x => !x.sys).slice(-30) });
       setTimeout(() => { try { c.close(); } catch {} }, 3000);
     });
   }
@@ -188,7 +190,7 @@ window.MP = (() => {
       const to = setTimeout(() => { done(); try { c.close(); } catch {} const e = new Error('連線逾時'); e.timeout = true; rej(e); }, 12000);
       knockReject = e => { done(); rej(e); };
       c.on('open', () => c.send({ type: 'join', peerId: myId, name: myName }));
-      c.on('data', m => { if (m.type === 'welcome') { done(); res(m.st); setTimeout(() => { try { c.close(); } catch {} }, 500); } });
+      c.on('data', m => { if (m.type === 'welcome') { done(); res(m); setTimeout(() => { try { c.close(); } catch {} }, 500); } });
     });
   }
 
@@ -201,6 +203,7 @@ window.MP = (() => {
       case 'state': onState(from, m.st); break;
       case 'answer': if (amHost()) hostAnswer(from, m); break;
       case 'bye': drop(from); break;
+      case 'chat': addChat(m); break;
     }
   }
 
@@ -360,7 +363,8 @@ window.MP = (() => {
     state.used.push(e.set.id);
     state.round = {
       n: (state.round ? state.round.n : 0) + 1, setId: e.set.id, diffId: d.id,
-      startAt: Date.now() + LEAD_MS, limitMs: Number(st.limit) * 1000, mode: st.mode, answered: [],
+      startAt: Date.now() + LEAD_MS, limitMs: Number(st.limit) * 1000, mode: st.mode, scoring: st.scoring, answered: [],
+      secR: st.mode === 'chart' && st.section === 'random' ? Math.random() : null, // same section for everyone
     };
     state.reveal = null; state.phase = 'question';
     secret = { answers: {} };
@@ -396,9 +400,9 @@ window.MP = (() => {
     for (const p of state.players) {
       const a = secret.answers[p.id];
       const correct = !!a && checkAnswer(a.text, set);
-      const pts = !correct ? 0 : r.mode === 'hybrid' && a.elapsed < r.limitMs / 2 ? 2 : 1;
+      const pts = pointsFor(correct, a ? a.elapsed : 0, r.limitMs, r.mode, r.scoring);
       p.score += pts;
-      answers[p.id] = { text: a ? a.text : null, correct, pts };
+      answers[p.id] = { text: a ? a.text : null, correct, pts, ms: a ? Math.round(a.elapsed) : null };
     }
     state.reveal = { n: r.n, answers };
     state.history.push({ setId: r.setId, diffId: r.diffId, right: Object.keys(answers).filter(id => answers[id].correct) });
@@ -430,7 +434,12 @@ window.MP = (() => {
     audio.src = `https://b.ppy.sh/preview/${r.setId}.mp3`;
     audio.loop = true;
     if (r.mode !== 'audio') {
-      loadChart(r.setId, r.diffId).then(c => { if (playback === pb) { pb.chart = c; renderer.load(c); } })
+      loadChart(r.setId, r.diffId).then(c => {
+        if (playback !== pb) return;
+        pb.chart = c;
+        const q = questionNotes(c, r.mode, r.secR != null ? 'random' : 'preview', r.secR ?? 0);
+        renderer.load({ keys: c.keys, notes: q.notes });
+      })
         .catch(() => { if (playback === pb) $('#prompt').textContent = '譜面載入失敗，只能用聽的了'; });
     }
     show($('#audioOnly'), r.mode === 'audio');
@@ -486,12 +495,54 @@ window.MP = (() => {
   }
 
   // ---------- rendering ----------
+  // ---------- chat ----------
+  function addChat(m) {
+    if (!m || !m.id || chatSeen.has(m.id)) return;
+    chatSeen.add(m.id);
+    chatLog.push({ id: m.id, from: m.from, name: m.name, text: String(m.text || '').slice(0, 300), sys: !!m.sys });
+    if (chatLog.length > 200) chatLog.shift();
+    renderChat();
+  }
+  const sysChat = text => addChat({ id: 'sys-' + rand(10), sys: true, text });
+  function sendChat(text) {
+    text = text.trim().slice(0, 300);
+    if (!text || !state) return;
+    const m = { type: 'chat', id: rand(12), from: myId, name: myName, text };
+    broadcast(m);
+    addChat(m);
+  }
+  function renderChat() {
+    const box = $('#chatLog');
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.innerHTML = chatLog.slice(-100).map(m => m.sys
+      ? `<div class="sys">${esc(m.text)}</div>`
+      : `<div><b class="${m.from === myId ? 'me' : ''}">${esc((player(m.from) || m).name)}</b> ${esc(m.text)}</div>`).join('');
+    if (atBottom) box.scrollTop = box.scrollHeight;
+  }
+  // announce joins, disconnects and host changes in the chat
+  function announce() {
+    const now = { host: state.hostId, players: state.players.map(p => ({ id: p.id, name: p.name, on: p.on })) };
+    if (announced) {
+      for (const p of now.players) {
+        const was = announced.players.find(x => x.name === p.name);
+        if (!was) sysChat(`${p.name} 加入了`);
+        else if (was.on && !p.on) sysChat(`${p.name} 離線了`);
+        else if (!was.on && p.on) sysChat(`${p.name} 回來了`);
+      }
+      if (announced.host !== now.host) sysChat(`👑 ${(player(now.host) || { name: '?' }).name} 成為房主`);
+    } else sysChat(`進入房間 ${room}`);
+    announced = now;
+  }
+  function placeChat(slot) { const c = $('#chat'); if (c.parentElement !== $(slot)) $(slot).append(c); show(c); }
+
   function render() {
     if (!mp.active || !state) return;
+    announce();
     show($('#scoreboard')); show($('#mpLeaveHeader'), state.phase !== 'lobby');
     const mine = me();
     $('#scoreLabel').textContent = mine ? mine.score : 0;
     $('#roundLabel').textContent = `房間 ${room}` + (state.round ? ` · 第 ${state.round.n} / ${state.total} 題` : '');
+    placeChat({ lobby: '#lobbyChatSlot', question: '#gameChatSlot', reveal: '#gameChatSlot', results: '#resultsChatSlot' }[state.phase]);
     if (state.phase === 'lobby') renderLobby();
     else if (state.phase === 'question') renderQuestion();
     else if (state.phase === 'reveal') renderReveal();
@@ -505,7 +556,7 @@ window.MP = (() => {
       if (mode === 'question') extra = state.round.answered.includes(p.id) ? '<span class="ans ok">✓ 已作答</span>' : '<span class="ans">思考中…</span>';
       if (mode === 'reveal') {
         const a = state.reveal.answers[p.id] || { text: null };
-        extra = `<span class="ans ${a.correct ? 'ok' : 'no'}">${a.correct ? '✔ +' + a.pts : '✘'}</span>`;
+        extra = `<span class="ans ${a.correct ? 'ok' : 'no'}">${a.correct ? '✔ +' + a.pts + (a.ms != null ? ` · ${(a.ms / 1000).toFixed(1)}s` : '') : '✘'}</span>`;
       }
       const guess = mode === 'reveal' ? `<span class="guess">${esc((state.reveal.answers[p.id] || {}).text ?? '（沒作答）')}</span>` : '';
       const crown = p.id === state.hostId ? '👑 ' : '';
@@ -537,7 +588,8 @@ window.MP = (() => {
       $('#lobbySummary').innerHTML = `<h2>房間設定</h2>
         <p>題庫：${POOL_NAME[s.pool]} · 前 ${s.topN} 組</p>
         <p>模式：${MODE_NAME[s.mode]} · ${s.keys === 'any' ? '全部鍵數' : s.keys + 'K'}${s.mode !== 'audio' ? ` · ${s.srMin}–${s.srMax}★` : ''}</p>
-        <p>${s.rounds} 題 · 每題 ${s.limit} 秒</p>
+        ${s.mode === 'chart' ? `<p>譜面：${s.section === 'random' ? '隨機段落' : 'preview 那段'}</p>` : ''}
+        <p>${s.rounds} 題 · 每題 ${s.limit} 秒 · ${s.scoring === 'speed' ? '搶答計分' : '一般計分'}</p>
         <p class="hint">等房主開始…（音量、譜面速度在遊戲畫面可以自己調）</p>`;
     }
   }
@@ -557,7 +609,10 @@ window.MP = (() => {
     const pb = playback;
     clearInterval(pb.iv); show($('#countdown'), false); show($('#phaseTag'), false);
     $('#timerBar').style.width = '0%';
-    if (r.mode !== 'audio' && audio.paused) { pb.phase = 2; playAudioAt(0); renderer.start(chartClockSynced(pb)); }
+    if (r.mode !== 'audio' && audio.paused) {
+      if (pb.chart) renderer.load(pb.chart); // back to the preview part, synced with the music
+      pb.phase = 2; playAudioAt(0); renderer.start(chartClockSynced(pb));
+    }
     hideSuggest();
     show($('#questionArea'), false); show($('#revealArea'));
     const mine = state.reveal.answers[myId] || { text: null };
@@ -574,7 +629,7 @@ window.MP = (() => {
     stopPlayback();
     go('results');
     const ranked = [...state.players].sort((a, b) => b.score - a.score);
-    const max = state.total * (state.settings.mode === 'hybrid' ? 2 : 1);
+    const max = maxPoints(state.total, state.settings.mode, state.settings.scoring);
     $('#finalScore').textContent = `🏆 ${ranked[0] ? ranked[0].name : ''}（滿分 ${max}）`;
     const ol = $('#history');
     ol.innerHTML = ranked.map(p => `<li${p.id === myId ? ' class="ok"' : ''}>${esc(p.name)} — <b>${p.score}</b> 分</li>`).join('') +
@@ -631,9 +686,9 @@ window.MP = (() => {
         if (!/^[A-Z0-9]{5}$/.test(room)) { status('房號是 5 個字'); return; }
         status('連線中…');
         peer = await makePeer(`${NS}-${room}-${rand(8)}`); myId = peer.id; setupPeer();
-        let st = null, lastErr = null;
+        let st = null, lastErr = null, welcome = null;
         for (let i = 0; i < 3 && !st; i++) {
-          try { st = await knock(); } catch (e) { lastErr = e; status(`${e.message}，重試中…（${i + 1}/3）`); await new Promise(r => setTimeout(r, 2000)); }
+          try { welcome = await knock(); st = welcome.st; } catch (e) { lastErr = e; status(`${e.message}，重試中…（${i + 1}/3）`); await new Promise(r => setTimeout(r, 2000)); }
         }
         if (!st && lastErr && lastErr.timeout) {
           throw new Error(hasTurn()
@@ -642,6 +697,7 @@ window.MP = (() => {
         }
         if (!st) throw lastErr || new Error('加入失敗');
         state = st;
+        (welcome.chat || []).forEach(addChat);
         heal();
         syncClock();
       }
@@ -666,7 +722,9 @@ window.MP = (() => {
     for (const c of conns.values()) try { c.close(); } catch {}
     conns.clear(); lastSeen.clear(); suspects.clear(); seesHost.clear();
     const p = peer; peer = null;
-    if (p) try { p.destroy(); } catch {} state = null; myAnswers = {}; secret = { answers: {} };
+    if (p) try { p.destroy(); } catch {}
+    peer = null; state = null; myAnswers = {}; secret = { answers: {} };
+    chatLog.length = 0; chatSeen.clear(); announced = null; $('#chatLog').innerHTML = ''; show($('#chat'), false);
     mp.active = false;
   }
 
@@ -709,6 +767,11 @@ window.MP = (() => {
     $('#mpJoinBtn').onclick = () => begin_(false);
     $('#mpRoom').addEventListener('keydown', e => { if (e.key === 'Enter') begin_(false); });
     $('#leaveBtn').onclick = leave;
+    $('#chatInput').addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault(); e.stopPropagation();
+      sendChat(e.target.value); e.target.value = '';
+    });
     $('#mpTestBtn').onclick = () => diagnose().catch(e => { $('#mpDiag').textContent = '測試失敗：' + e.message; });
     $('#mpLeaveHeader').onclick = () => { if (confirm('確定離開房間？')) leave(); };
     $('#copyLinkBtn').onclick = () => { navigator.clipboard?.writeText($('#lobbyLink').href).then(() => { $('#copyLinkBtn').textContent = '已複製'; setTimeout(() => { $('#copyLinkBtn').textContent = '複製連結'; }, 1500); }).catch(() => {}); };
