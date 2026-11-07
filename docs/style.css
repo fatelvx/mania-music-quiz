@@ -109,3 +109,30 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 #history .ok { color: var(--good); }
 #history .no { color: var(--bad); }
 #history small { color: var(--muted); }
+
+/* ---------- multiplayer ---------- */
+.mp-card { margin-bottom: 16px; }
+.or { color: var(--muted); padding: 0 4px; }
+#mpName { width: 100%; }
+#mpName, #mpRoom { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; }
+button.small { padding: 4px 10px; font-size: 13px; }
+.lobby-grid { display: grid; grid-template-columns: minmax(260px, 1fr) 2fr; gap: 16px; align-items: start; }
+@media (max-width: 760px) { .lobby-grid { grid-template-columns: 1fr; } }
+.room-code { font-family: ui-monospace, Consolas, monospace; color: var(--accent); letter-spacing: 3px; margin-left: 6px; }
+#lobbyLink { color: var(--accent-2); word-break: break-all; }
+.players { list-style: none; padding: 0; margin: 12px 0; }
+.players li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; background: var(--panel-2); margin-bottom: 6px; }
+.players li.me { outline: 1px solid var(--accent); }
+.players li.off { opacity: .45; }
+.players .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.players .pts { font-weight: 700; min-width: 2ch; text-align: right; }
+.players .ans { font-size: 12px; color: var(--muted); }
+.players .ans.ok { color: var(--good); }
+.players .ans.no { color: var(--bad); }
+.players .guess { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-side { margin-top: 20px; }
+.countdown {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 96px; font-weight: 800; color: var(--accent); background: rgba(12,11,16,.7);
+}
+#lobbySummary p { margin: 4px 0; }

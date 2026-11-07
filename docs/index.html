@@ -12,6 +12,7 @@
     <div id="scoreboard" class="hidden">
       <span id="roundLabel"></span>
       <span>分數 <b id="scoreLabel">0</b></span>
+      <button id="mpLeaveHeader" class="small hidden">離開房間</button>
     </div>
   </header>
 
@@ -23,8 +24,37 @@
 
   <!-- setup -->
   <section id="setup" class="screen hidden">
-    <div class="card">
-      <h2>設定</h2>
+    <div class="card mp-card">
+      <h2>多人</h2>
+      <div class="row">
+        <div class="field">
+          <label>暱稱</label>
+          <input id="mpName" maxlength="20" placeholder="你的名字">
+        </div>
+        <div class="field">
+          <label>房號</label>
+          <div class="inline">
+            <input id="mpRoom" maxlength="5" placeholder="ABCDE" style="text-transform:uppercase;width:110px">
+            <button id="mpJoinBtn">加入</button>
+            <span class="or">或</span>
+            <button id="mpCreateBtn" class="primary">開房</button>
+          </div>
+        </div>
+      </div>
+      <p class="hint" id="mpStatus"></p>
+    </div>
+
+    <div class="card" id="settingsCard">
+      <h2 id="settingsTitle">單人設定</h2>
+      <div class="field">
+        <label>題庫類型</label>
+        <div class="seg" data-name="pool">
+          <button data-v="pp">🔥 pp 圖</button>
+          <button data-v="classic">🏛️ 經典</button>
+          <button data-v="mixed">🎲 混合</button>
+        </div>
+        <p class="hint" id="poolHint"></p>
+      </div>
       <div class="field">
         <label>模式</label>
         <div class="seg" data-name="mode">
@@ -44,7 +74,7 @@
       </div>
       <div class="row">
         <div class="field">
-          <label>題庫（mania 最多人玩的前 N 組，越少越大眾）</label>
+          <label>題庫範圍（前 N 組，越少越大眾）</label>
           <select id="topN">
             <option value="100">前 100</option>
             <option value="250">前 250</option>
@@ -84,6 +114,22 @@
     </div>
   </section>
 
+  <!-- multiplayer lobby -->
+  <section id="lobby" class="screen hidden">
+    <div class="lobby-grid">
+      <div class="card">
+        <h2>房間 <span class="room-code" id="lobbyRoom"></span></h2>
+        <p class="hint">把房號或連結給朋友：<a id="lobbyLink" href="#"></a> <button id="copyLinkBtn" class="small">複製連結</button></p>
+        <ul id="lobbyPlayers" class="players"></ul>
+        <p class="hint" id="lobbyNet"></p>
+        <button id="leaveBtn" class="small">離開房間</button>
+      </div>
+      <div id="lobbySettingsSlot">
+        <div class="card" id="lobbySummary"></div>
+      </div>
+    </div>
+  </section>
+
   <!-- game -->
   <section id="game" class="screen hidden">
     <div class="timer"><div id="timerBar"></div></div>
@@ -95,6 +141,7 @@
           <p>🎵 播放中…</p>
         </div>
         <div id="phaseTag" class="phase-tag hidden"></div>
+        <div id="countdown" class="countdown hidden"></div>
         <div class="speed">
           <label>譜面速度</label>
           <input type="range" id="speed" min="250" max="1500" step="50">
@@ -113,6 +160,7 @@
             <button id="replayBtn">重播</button>
             <button id="skipBtn">放棄</button>
           </div>
+          <p class="hint" id="mpMyAnswer"></p>
         </div>
         <div id="revealArea" class="hidden">
           <p id="verdict" class="verdict"></p>
@@ -126,7 +174,9 @@
             </div>
           </div>
           <button id="nextBtn" class="primary">下一題 ⏎</button>
+          <p class="hint" id="mpNextHint"></p>
         </div>
+        <ul id="mpPlayers" class="players mp-side hidden"></ul>
       </div>
     </div>
   </section>
@@ -142,7 +192,9 @@
   </section>
 
   <audio id="audio" preload="auto"></audio>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <script src="chart.js"></script>
   <script src="app.js"></script>
+  <script src="multi.js"></script>
 </body>
 </html>

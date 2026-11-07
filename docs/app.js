@@ -1,6 +1,6 @@
 const $ = s => document.querySelector(s);
 const show = (el, on = true) => el.classList.toggle('hidden', !on);
-const screens = ['loading', 'setup', 'game', 'results'];
+const screens = ['loading', 'setup', 'lobby', 'game', 'results'];
 const go = name => screens.forEach(s => show($('#' + s), s === name));
 const audio = $('#audio');
 const renderer = new Chart.Renderer($('#playfield'));
@@ -12,7 +12,7 @@ const MODE_HINT = {
 };
 
 // ---------- settings ----------
-const DEFAULTS = { mode: 'audio', keys: '4', topN: '250', srMin: 0, srMax: 15, rounds: '10', limit: '20', volume: 0.25, speed: 700 };
+const DEFAULTS = { pool: 'pp', mode: 'audio', keys: '4', topN: '250', srMin: 0, srMax: 15, rounds: '10', limit: '20', volume: 0.25, speed: 700 };
 let settings = { ...DEFAULTS };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('mmq-settings') || '{}')); } catch {}
 const save = () => { try { localStorage.setItem('mmq-settings', JSON.stringify(settings)); } catch {} };
@@ -23,7 +23,7 @@ function bindSettings() {
     const paint = () => seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === settings[name]));
     seg.addEventListener('click', e => {
       const b = e.target.closest('button'); if (!b) return;
-      settings[name] = b.dataset.v; paint(); save(); refreshSetupInfo();
+      settings[name] = b.dataset.v; paint(); save(); refreshSetupInfo(); onSettingsChanged();
     });
     paint();
   });
@@ -32,7 +32,7 @@ function bindSettings() {
     el.value = settings[id];
     el.addEventListener('input', () => {
       settings[id] = el.type === 'range' || el.type === 'number' ? Number(el.value) : el.value;
-      save(); refreshSetupInfo();
+      save(); refreshSetupInfo(); onSettingsChanged();
       if (id === 'volume') audio.volume = settings.volume;
       if (id === 'speed') renderer.visibleMs = settings.speed;
     });
@@ -58,25 +58,72 @@ function buildSongs() {
     const key = norm(s.title) + '|' + norm(s.artist);
     if (!map.has(key)) map.set(key, { title: s.title, titleU: s.titleU, artist: s.artist, artistU: s.artistU, plays: 0,
       search: [s.title, s.titleU, s.artist, s.artistU].join(' ').toLowerCase() });
-    map.get(key).plays += s.plays || 0;
+    const e = map.get(key);
+    e.rank = Math.min(e.rank ?? INF, POOL_ORDER.mixed(s));
   }
-  SONGS = [...map.values()].sort((a, b) => b.plays - a.plays);
+  SONGS = [...map.values()].sort((a, b) => a.rank - b.rank);
 }
 
-function eligibleSets() {
-  const top = POOL.slice(0, Number(settings.topN));
+// shared settings (synced in multiplayer) vs. local-only ones (volume, speed)
+const SHARED_KEYS = ['pool', 'mode', 'keys', 'topN', 'srMin', 'srMax', 'rounds', 'limit'];
+const onSettingsChanged = () => { if (window.MP && MP.active) MP.onSettingsChanged(); };
+
+const INF = Infinity;
+const POOL_ORDER = {
+  pp: s => s.ppRank ?? INF,          // how many sampled players farm it
+  classic: s => s.playRank ?? INF,   // total plays of its mania diffs
+  mixed: s => Math.min(s.ppRank ?? INF, s.playRank ?? INF),
+};
+const sortedCache = {};
+function sortedPool(kind) {
+  if (!sortedCache[kind]) {
+    const f = POOL_ORDER[kind] || POOL_ORDER.pp;
+    const ranked = POOL.filter(s => f(s) < INF).sort((a, b) => f(a) - f(b));
+    sortedCache[kind] = ranked.length ? ranked : POOL; // data built before ranks existed
+  }
+  return sortedCache[kind];
+}
+
+// "top N" means the N most popular sets *for the chosen key count* (7K is a minority otherwise)
+function eligibleSets(st = settings) {
+  const keyOk = d => st.keys === 'any' || d.keys === Number(st.keys);
+  const ppOnly = st.pool === 'pp';
+  const top = sortedPool(st.pool).filter(s => s.diffs.some(d => keyOk(d) && (!ppOnly || d.pp))).slice(0, Number(st.topN));
   const out = [];
   for (const s of top) {
-    const diffs = s.diffs.filter(d =>
-      (settings.keys === 'any' || d.keys === Number(settings.keys)) &&
-      (settings.mode === 'audio' || (d.sr >= settings.srMin && d.sr <= settings.srMax)));
+    let diffs = s.diffs.filter(d => keyOk(d) && (st.mode === 'audio' || (d.sr >= st.srMin && d.sr <= st.srMax)));
+    // in the pp pool, prefer the difficulties people actually farm
+    if (ppOnly && diffs.some(d => d.pp)) diffs = diffs.filter(d => d.pp);
     if (diffs.length) out.push({ set: s, diffs });
   }
   return out;
 }
 
+function checkAnswer(text, set) {
+  const g = text == null ? '' : norm(text);
+  return !!g && (g === norm(set.title) || g === norm(set.titleU));
+}
+
+function fillRevealCard(set, diff) {
+  $('#cover').src = `https://assets.ppy.sh/beatmaps/${set.id}/covers/cover.jpg`;
+  $('#rTitle').textContent = set.titleU && set.titleU !== set.title ? `${set.titleU}（${set.title}）` : set.title;
+  $('#rArtist').textContent = set.artistU && set.artistU !== set.artist ? `${set.artistU}（${set.artist}）` : set.artist;
+  $('#rMeta').textContent = (set.source ? `出自 ${set.source} · ` : '') + `mapped by ${set.creator} · [${diff.version}] ${diff.keys}K ${diff.sr.toFixed(2)}★`;
+  $('#rLink').href = `https://osu.ppy.sh/beatmapsets/${set.id}#mania/${diff.id}`;
+}
+
+// answer box -> single player or multiplayer
+const submitAnswer = v => (window.MP && MP.active ? MP.submit(v) : answer(v));
+
+const POOL_HINT = {
+  pp: '從排行 1～10000 名抽樣玩家，看大家 top plays 裡最常出現哪些圖。最多人在刷的就是這些。',
+  classic: '依 mania 難度的總遊玩次數排序，老牌經典圖比較多。',
+  mixed: '兩邊都算，排名取較前面的那一個。',
+};
+
 function refreshSetupInfo() {
   $('#modeHint').textContent = MODE_HINT[settings.mode];
+  $('#poolHint').textContent = POOL_HINT[settings.pool] || '';
   const n = eligibleSets().length;
   $('#poolInfo').textContent = `符合條件的圖組：${n} 組` + (n < Number(settings.rounds) ? '（不夠出題，放寬條件看看）' : '');
   $('#startBtn').disabled = n === 0;
@@ -182,7 +229,7 @@ function beginPlayback() {
   show($('#audioOnly'), mode === 'audio');
   show($('.speed'), mode !== 'audio');
   show($('#phaseTag'), mode === 'hybrid');
-  if (mode === 'audio') { renderer.clear(); audio.currentTime = 0; audio.play(); }
+  if (mode === 'audio') { renderer.clear(); audio.currentTime = 0; audio.play().catch(() => {}); }
   else if (mode === 'chart') renderer.start(silentClock());
   else if (round.phase === 1) { $('#phaseTag').textContent = '🔇 只有譜面 · 2 分'; renderer.start(silentClock()); }
   else startSyncedChart();
@@ -190,7 +237,7 @@ function beginPlayback() {
 
 function startSyncedChart() {
   $('#phaseTag').textContent = '🔊 有音樂了 · 1 分';
-  audio.currentTime = 0; audio.play();
+  audio.currentTime = 0; audio.play().catch(() => {});
   if (round.synced) renderer.start(() => round.chartStart + audio.currentTime * 1000);
   else renderer.start(silentClock());
 }
@@ -215,8 +262,7 @@ function answer(text) {
   cancelAnimationFrame(tickRaf);
   hideSuggest();
   const { set, diff } = round;
-  const guess = text == null ? '' : norm(text);
-  const correct = !!guess && (guess === norm(set.title) || guess === norm(set.titleU));
+  const correct = checkAnswer(text, set);
   const pts = !correct ? 0 : round.phase === 1 ? 2 : 1;
   game.score += pts;
   game.history.push({ set, diff, correct, pts, guess: text });
@@ -229,11 +275,7 @@ function answer(text) {
   const v = $('#verdict');
   v.className = 'verdict ' + (correct ? 'good' : 'bad');
   v.textContent = correct ? `答對！ +${pts}` : text == null ? (performance.now() - round.t0 >= round.limitMs ? '時間到' : '放棄') : `答錯（你答：${text}）`;
-  $('#cover').src = `https://assets.ppy.sh/beatmaps/${set.id}/covers/cover.jpg`;
-  $('#rTitle').textContent = set.titleU && set.titleU !== set.title ? `${set.titleU}（${set.title}）` : set.title;
-  $('#rArtist').textContent = set.artistU && set.artistU !== set.artist ? `${set.artistU}（${set.artist}）` : set.artist;
-  $('#rMeta').textContent = (set.source ? `出自 ${set.source} · ` : '') + `mapped by ${set.creator} · [${diff.version}] ${diff.keys}K ${diff.sr.toFixed(2)}★`;
-  $('#rLink').href = `https://osu.ppy.sh/beatmapsets/${set.id}#mania/${diff.id}`;
+  fillRevealCard(set, diff);
   $('#nextBtn').focus();
 }
 
@@ -270,7 +312,7 @@ function renderSuggest() {
     const sm = document.createElement('small');
     sm.textContent = [s.titleU !== s.title ? s.titleU : '', s.artist].filter(Boolean).join(' · ');
     li.append(sm);
-    li.addEventListener('mousedown', e => { e.preventDefault(); $('#answer').value = s.title; hideSuggest(); answer(s.title); });
+    li.addEventListener('mousedown', e => { e.preventDefault(); $('#answer').value = s.title; hideSuggest(); submitAnswer(s.title); });
     ul.append(li);
   });
   show(ul, sugg.length > 0);
@@ -291,21 +333,22 @@ $('#answer').addEventListener('keydown', e => {
     e.preventDefault();
     e.stopPropagation(); // don't let the same keypress also trigger "next question"
     const v = sel >= 0 && sugg[sel] ? sugg[sel].title : $('#answer').value.trim();
-    if (v) { $('#answer').value = v; answer(v); }
+    if (v) { $('#answer').value = v; hideSuggest(); submitAnswer(v); }
   }
 });
 $('#answer').addEventListener('blur', () => setTimeout(hideSuggest, 100));
 
 // ---------- buttons ----------
 $('#startBtn').onclick = startGame;
-$('#submitBtn').onclick = () => { const v = $('#answer').value.trim(); if (v) answer(v); };
+$('#submitBtn').onclick = () => { const v = $('#answer').value.trim(); if (v) submitAnswer(v); };
 $('#skipBtn').onclick = () => answer(null);
 $('#revealAudioBtn').onclick = enterPhase2;
 $('#replayBtn').onclick = () => { if (round && !round.done) { renderer.stop(); audio.pause(); beginPlayback(); } };
-$('#nextBtn').onclick = nextRound;
-$('#againBtn').onclick = () => { show($('#scoreboard'), false); go('setup'); refreshSetupInfo(); };
+$('#nextBtn').onclick = () => (window.MP && MP.active ? MP.next() : nextRound());
+$('#againBtn').onclick = () => {
+  if (window.MP && MP.active) return MP.again(); show($('#scoreboard'), false); go('setup'); refreshSetupInfo(); };
 document.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.repeat && round && round.done && !e.target.closest('button, input')) { e.preventDefault(); nextRound(); }
+  if (e.key === 'Enter' && !e.repeat && !(window.MP && MP.active) && round && round.done && !e.target.closest('button, input')) { e.preventDefault(); nextRound(); }
 });
 
 // ---------- boot ----------
@@ -317,7 +360,7 @@ async function boot() {
     if (!r.ok) throw new Error(r.status);
     const data = await r.json();
     POOL = data.sets;
-    $('#builtAt').textContent = `題庫 ${POOL.length} 組 · 更新於 ${data.builtAt.slice(0, 10)} · 依 mania 遊玩次數排序`;
+    $('#builtAt').textContent = `題庫共 ${POOL.length} 組 · 更新於 ${data.builtAt.slice(0, 10)}`;
   } catch (e) {
     $('#loadingText').textContent = '題庫載入失敗（' + e.message + '）';
     return;
@@ -325,5 +368,6 @@ async function boot() {
   buildSongs();
   go('setup');
   refreshSetupInfo();
+  if (window.MP) MP.init();
 }
 boot();

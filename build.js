@@ -60,6 +60,77 @@ async function scanSets(token) {
   return [...sets.values()];
 }
 
+// ---------- pp maps: what players actually farm ----------
+// Sample players spread across the mania rankings (not just the top), and count how many of them
+// have each map in their top-100 best scores.
+const BEST_CACHE = path.join(__dirname, 'cache', 'best');
+fs.mkdirSync(BEST_CACHE, { recursive: true });
+const PP_PAGES = { '4k': range(1, 200, 10), '7k': range(1, 200, 20) }; // 50 players per page, ranks 1..10000
+
+function range(from, to, step) { const a = []; for (let i = from; i <= to; i += step) a.push(i); return a; }
+
+async function apiGet(token, p) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const r = await fetch('https://osu.ppy.sh/api/v2' + p, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'x-api-version': '20240529' },
+      });
+      if (r.ok) return r.json();
+      if (r.status === 404) return null;
+    } catch {}
+    await sleep(2000 * (attempt + 1));
+  }
+  throw new Error('API failed: ' + p);
+}
+
+async function samplePpMaps(token) {
+  const users = [];
+  for (const [variant, pages] of Object.entries(PP_PAGES)) {
+    for (const page of pages) {
+      const r = await apiGet(token, `/rankings/mania/performance?variant=${variant}&cursor[page]=${page}`);
+      for (const row of r?.ranking || []) users.push(row.user.id);
+      process.stdout.write(`\rranking pages: ${users.length} players`);
+      await sleep(300);
+    }
+  }
+  console.log();
+  const uniq = [...new Set(users)];
+  const sets = new Map(); // setId -> { meta, users:Set, diffs: Map(diffId -> {.., users:Set}) }
+  let i = 0, done = 0;
+  async function worker() {
+    while (i < uniq.length) {
+      const uid = uniq[i++];
+      const file = path.join(BEST_CACHE, `${uid}.json`);
+      let best;
+      if (fs.existsSync(file)) best = JSON.parse(fs.readFileSync(file, 'utf8'));
+      else {
+        const raw = (await apiGet(token, `/users/${uid}/scores/best?mode=mania&limit=100`)) || [];
+        best = raw.filter(s => s.beatmap && !s.beatmap.convert && s.beatmap.mode === 'mania').map(s => ({
+          set: { id: s.beatmapset.id, title: s.beatmapset.title, titleU: s.beatmapset.title_unicode, artist: s.beatmapset.artist,
+            artistU: s.beatmapset.artist_unicode, source: s.beatmapset.source || '', creator: s.beatmapset.creator },
+          diff: { id: s.beatmap.id, version: s.beatmap.version, keys: Math.round(s.beatmap.cs),
+            sr: Math.round(s.beatmap.difficulty_rating * 100) / 100, length: s.beatmap.total_length, status: s.beatmap.status },
+        }));
+        fs.writeFileSync(file, JSON.stringify(best));
+        await sleep(250);
+      }
+      for (const { set, diff } of best) {
+        if (!['ranked', 'approved', 'loved'].includes(diff.status)) continue;
+        if (!sets.has(set.id)) sets.set(set.id, { meta: set, users: new Set(), diffs: new Map() });
+        const e = sets.get(set.id);
+        e.users.add(uid);
+        if (!e.diffs.has(diff.id)) e.diffs.set(diff.id, { ...diff, users: new Set() });
+        e.diffs.get(diff.id).users.add(uid);
+      }
+      done++;
+      if (done % 10 === 0 || done === uniq.length) process.stdout.write(`\rbest scores: ${done}/${uniq.length} players`);
+    }
+  }
+  await Promise.all([worker(), worker()]);
+  console.log();
+  return sets;
+}
+
 async function getOsu(id) {
   const file = path.join(OSU_CACHE, `${id}.osu`);
   if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8');
@@ -101,9 +172,30 @@ function excerpt(text, lengthSec) {
 async function main() {
   const token = await getToken();
   const scanned = await scanSets(token);
-  // familiarity for mania players = how much the mania diffs actually get played
+  // "classic" familiarity = how much the mania diffs actually get played
   scanned.sort((a, b) => b.maniaPlays - a.maniaPlays);
-  const pool = scanned.slice(0, POOL_SIZE);
+  const classic = scanned.slice(0, POOL_SIZE);
+  classic.forEach((s, i) => { s.playRank = i + 1; });
+
+  // "pp" familiarity = how many sampled players have it in their top plays
+  const ppSets = await samplePpMaps(token);
+  const ppList = [...ppSets.values()].filter(e => e.users.size >= 3).sort((a, b) => b.users.size - a.users.size).slice(0, POOL_SIZE);
+  const byId = new Map(classic.map(s => [s.id, s]));
+  ppList.forEach((e, i) => {
+    let s = byId.get(e.meta.id);
+    if (!s) {
+      const scannedSet = scanned.find(x => x.id === e.meta.id);
+      s = scannedSet ? { ...scannedSet } : { ...e.meta, maniaPlays: 0, diffs: [...e.diffs.values()].map(({ users, status, ...d }) => ({ ...d, plays: 0 })) };
+      byId.set(s.id, s);
+    }
+    s.ppRank = i + 1;
+    s.ppUsers = e.users.size;
+    for (const d of s.diffs) { const pd = e.diffs.get(d.id); if (pd) d.pp = pd.users.size; }
+    // pp diffs the set scan didn't know about (e.g. sets outside the scanned range)
+    for (const pd of e.diffs.values()) if (!s.diffs.some(d => d.id === pd.id)) { const { users, status, ...d } = pd; s.diffs.push({ ...d, plays: 0, pp: users.size }); }
+  });
+  const pool = [...byId.values()];
+  console.log(`classic ${classic.length} + pp ${ppList.length} -> ${pool.length} unique sets`);
 
   const jobs = pool.flatMap(s => s.diffs.map(d => ({ s, d })));
   console.log(`pool ${pool.length} sets, ${jobs.length} mania diffs to excerpt`);
