@@ -1,5 +1,5 @@
 // Builds the static quiz data for GitHub Pages.
-//   node build.js            -> docs/data/pool.json + docs/data/charts/<setId>.json
+//   node build.js            -> docs/data/pool.json
 // Needs OSU_CLIENT_ID / OSU_CLIENT_SECRET in .env (never shipped to the site).
 const fs = require('node:fs');
 const path = require('node:path');
@@ -8,12 +8,9 @@ try { process.loadEnvFile(path.join(__dirname, '.env')); } catch {}
 const { OSU_CLIENT_ID, OSU_CLIENT_SECRET } = process.env;
 const POOL_SIZE = Number(process.env.POOL_SIZE || 1000); // kept after ranking by mania plays
 const SCAN = Number(process.env.SCAN || POOL_SIZE * 2);  // how many sets (by total plays) to scan first
-const WINDOW_MS = 12000; // chart excerpt length (official previews are ~10s)
 
 const OUT = path.join(__dirname, 'docs', 'data');
-const CHART_DIR = path.join(OUT, 'charts');
-const OSU_CACHE = path.join(__dirname, 'cache', 'osu');
-for (const d of [CHART_DIR, OSU_CACHE]) fs.mkdirSync(d, { recursive: true });
+fs.mkdirSync(OUT, { recursive: true });
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const UA = { 'User-Agent': 'mania-music-quiz-build/0.2' };
@@ -131,63 +128,6 @@ async function samplePpMaps(token) {
   return sets;
 }
 
-async function getOsu(id) {
-  const file = path.join(OSU_CACHE, `${id}.osu`);
-  if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8');
-  for (let attempt = 0; attempt < 4; attempt++) {
-    try {
-      const r = await fetch(`https://osu.ppy.sh/osu/${id}`, { headers: UA });
-      if (r.ok) { const t = await r.text(); fs.writeFileSync(file, t); return t; }
-      if (r.status === 404) return null;
-    } catch { /* ECONNRESET etc. -> retry */ }
-    await sleep(2000 * (attempt + 1)); // 429 / 5xx backoff
-  }
-  return null;
-}
-
-function excerpt(text, lengthSec, seed = 1) {
-  let section = '', keys = 4, preview = -1;
-  const objs = [];
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith('//')) continue;
-    const m = line.match(/^\[(.+)\]$/);
-    if (m) { section = m[1]; continue; }
-    if (section === 'General' && line.startsWith('PreviewTime:')) preview = Number(line.split(':')[1]);
-    else if (section === 'Difficulty' && line.startsWith('CircleSize:')) keys = Math.round(Number(line.split(':')[1]));
-    else if (section === 'HitObjects') {
-      const f = line.split(',');
-      const x = +f[0], t = +f[2], type = +f[3];
-      const end = (type & 128) ? +(f[5] || '').split(':')[0] : t;
-      objs.push([Math.min(keys - 1, Math.max(0, Math.floor(x * keys / 512))), t, end > t ? end - t : 0]);
-    }
-  }
-  const synced = preview >= 0;
-  const start = synced ? preview : Math.round(lengthSec * 1000 * 0.4);
-  const cut = st => objs.filter(([, t, len]) => t + len >= st && t < st + WINDOW_MS)
-    .map(([c, t, len]) => [c, t - st, len]).sort((a, b) => a[1] - b[1]);
-
-  // extra sections from elsewhere in the song, for "random section" chart questions.
-  // Seeded by the diff id so rebuilding doesn't churn the data.
-  const rnd = mulberry32(seed);
-  const first = objs.length ? Math.min(...objs.map(o => o[1])) : 0;
-  const last = objs.length ? Math.max(...objs.map(o => o[1] + o[2])) : 0;
-  const taken = [start], extra = [];
-  for (let tries = 0; tries < 60 && extra.length < EXTRA_SECTIONS; tries++) {
-    const st = Math.round(first + rnd() * Math.max(0, last - first - WINDOW_MS));
-    if (taken.some(x => Math.abs(x - st) < WINDOW_MS)) continue;
-    const w = cut(st);
-    if (w.length < (WINDOW_MS / 1000) * 2) continue; // skip breaks and sparse intros
-    taken.push(st); extra.push(w);
-  }
-  return { k: keys, s: synced ? 1 : 0, n: cut(start), w: extra };
-}
-
-const EXTRA_SECTIONS = 3;
-function mulberry32(a) {
-  return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-}
-
 async function main() {
   const token = await getToken();
   const scanned = await scanSets(token);
@@ -216,31 +156,8 @@ async function main() {
   const pool = [...byId.values()];
   console.log(`classic ${classic.length} + pp ${ppList.length} -> ${pool.length} unique sets`);
 
-  const jobs = pool.flatMap(s => s.diffs.map(d => ({ s, d })));
-  console.log(`pool ${pool.length} sets, ${jobs.length} mania diffs to excerpt`);
-  const charts = new Map(pool.map(s => [s.id, {}]));
-  let done = 0, failed = 0, i = 0;
-  async function worker() {
-    while (i < jobs.length) {
-      const { s, d } = jobs[i++];
-      const cached = fs.existsSync(path.join(OSU_CACHE, `${d.id}.osu`));
-      const text = await getOsu(d.id);
-      if (text) charts.get(s.id)[d.id] = excerpt(text, d.length, d.id); else failed++;
-      done++;
-      if (done % 20 === 0 || done === jobs.length) process.stdout.write(`\rcharts ${done}/${jobs.length} (failed ${failed})`);
-      if (!cached) await sleep(250);
-    }
-  }
-  await Promise.all(Array.from({ length: 4 }, worker));
-  console.log();
+  for (const s of pool) for (const d of s.diffs) delete d.plays;
 
-  for (const f of fs.readdirSync(CHART_DIR)) fs.unlinkSync(path.join(CHART_DIR, f));
-  for (const s of pool) {
-    const c = charts.get(s.id);
-    s.diffs = s.diffs.filter(d => c[d.id] && c[d.id].n.length > 0);
-    for (const d of s.diffs) delete d.plays;
-    if (s.diffs.length) fs.writeFileSync(path.join(CHART_DIR, `${s.id}.json`), JSON.stringify(c));
-  }
   // drop sets whose official preview audio is missing
   const noPreview = new Set();
   let pi = 0;
@@ -252,7 +169,6 @@ async function main() {
     }
   }));
   if (noPreview.size) console.log(`no preview audio: ${[...noPreview].join(', ')}`);
-  for (const id of noPreview) fs.rmSync(path.join(CHART_DIR, `${id}.json`), { force: true });
   const final = withDiffs.filter(s => !noPreview.has(s.id));
   fs.writeFileSync(path.join(OUT, 'pool.json'), JSON.stringify({ builtAt: new Date().toISOString(), sets: final }));
   console.log(`wrote ${final.length} sets -> docs/data/`);

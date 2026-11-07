@@ -24,6 +24,10 @@
 
   <!-- setup -->
   <section id="setup" class="screen hidden">
+    <div id="formatWarn" class="card warn hidden">
+      ⚠️ 這個瀏覽器播不了 osu! 的音檔格式（Ogg Vorbis），會聽不到音樂。
+      iPhone / iPad 請先更新到最新的 iOS；還是不行的話，改用電腦或 Android 手機。
+    </div>
     <div class="card mp-card">
       <h2>多人</h2>
       <div class="row">
@@ -58,23 +62,6 @@
         <p class="hint" id="poolHint"></p>
       </div>
       <div class="field">
-        <label>模式</label>
-        <div class="seg" data-name="mode">
-          <button data-v="audio">🎵 聽歌猜曲</button>
-          <button data-v="chart">👀 看譜猜歌</button>
-          <button data-v="hybrid">⚡ 先譜後歌</button>
-        </div>
-        <p class="hint" id="modeHint"></p>
-      </div>
-      <div class="field" id="sectionField">
-        <label>譜面段落</label>
-        <div class="seg" data-name="section">
-          <button data-v="preview">preview 那段</button>
-          <button data-v="random">🎲 隨機段落</button>
-        </div>
-        <p class="hint">隨機段落會從整首歌裡挑一段，同一首歌每次看到的都不一樣，比較考認譜。</p>
-      </div>
-      <div class="field">
         <label>計分</label>
         <div class="seg" data-name="scoring">
           <button data-v="normal">一般</button>
@@ -98,13 +85,6 @@
             <option value="500">前 500</option>
             <option value="1000">前 1000</option>
           </select>
-        </div>
-        <div class="field">
-          <label>星數範圍（看譜用的難度）</label>
-          <div class="inline">
-            <input type="number" id="srMin" min="0" max="15" step="0.5"> –
-            <input type="number" id="srMax" min="0" max="15" step="0.5"> ★
-          </div>
         </div>
       </div>
       <div class="row">
@@ -153,28 +133,22 @@
     <div class="timer"><div id="timerBar"></div></div>
     <div class="stage">
       <div class="playfield-wrap">
-        <canvas id="playfield" width="420" height="520"></canvas>
-        <div id="audioOnly" class="audio-only hidden">
+        <div id="audioOnly" class="audio-only">
           <div class="pulse"></div>
           <p>🎵 播放中…</p>
         </div>
-        <div id="phaseTag" class="phase-tag hidden"></div>
         <div id="countdown" class="countdown hidden"></div>
-        <div class="speed">
-          <label>譜面速度</label>
-          <input type="range" id="speed" min="250" max="1500" step="50">
-        </div>
+        <button id="tapForSound" class="tap-sound hidden">🔊 點一下開啟聲音</button>
       </div>
       <div class="side">
         <div id="questionArea">
           <p class="prompt" id="prompt">這是什麼歌？</p>
           <div class="ac">
-            <input id="answer" autocomplete="off" placeholder="輸入曲名（英文或原文都可）">
+            <input id="answer" autocomplete="off" placeholder="輸入曲名、歌手或出處（動畫 / 遊戲）都能搜">
             <ul id="suggest" class="hidden"></ul>
           </div>
           <div class="btns">
             <button id="submitBtn" class="primary">送出</button>
-            <button id="revealAudioBtn" class="hidden">直接放音樂</button>
             <button id="replayBtn">重播</button>
             <button id="skipBtn">放棄</button>
           </div>
@@ -220,7 +194,6 @@
   <audio id="audio" preload="auto"></audio>
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <script src="config.js"></script>
-  <script src="chart.js"></script>
   <script src="app.js"></script>
   <script src="multi.js"></script>
 </body>

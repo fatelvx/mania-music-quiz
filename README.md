@@ -1,12 +1,8 @@
 # mania music quiz
 
-osu!mania 猜歌遊戲，三種模式：
+osu!mania 猜歌遊戲：播官方 preview 音樂，猜曲名。作答框可以用曲名、歌手或出處（動畫 / 遊戲）搜尋。
 
-- 🎵 **聽歌猜曲**：播官方 preview 音樂
-- 👀 **看譜猜歌**：靜音，只看 note 捲動
-- ⚡ **先譜後歌**：先只有譜面（2 分），時間過半放音樂（1 分）
-
-看譜模式可以選 **隨機段落**（每張譜除了 preview 那段，另外存了最多 3 段），計分可以選 **搶答**（越快答對分數越高，10～2 分）。
+計分可以選 **一般**（答對 1 分）或 **搶答**（越快答對分數越高，10～2 分）。
 
 ## 題庫
 
@@ -33,11 +29,11 @@ osu!mania 猜歌遊戲，三種模式：
 
 ```bash
 cp .env.example .env   # 填入 OSU_CLIENT_ID / OSU_CLIENT_SECRET
-node build.js          # 產生 docs/data/pool.json 與 docs/data/charts/*.json（第一次約 15～20 分鐘，之後有快取）
+node build.js          # 產生 docs/data/pool.json（第一次約 10 分鐘，之後有快取）
 node serve.js          # 本機預覽 http://localhost:5173
 ```
 
-`build.js` 會下載每張 mania 譜面，只保留 preview 點開始 12 秒的 note，所以網站不需要碰 osu! API。
-音樂直接從 `b.ppy.sh/preview/<setId>.mp3` 播放。
+網站不需要碰 osu! API，題庫在本機先建好。
+音樂直接從 `b.ppy.sh/preview/<setId>.mp3` 播放（實際格式是 Ogg Vorbis，舊版 iOS 不支援，網站會顯示提示）。
 
 更新題庫：重跑 `node build.js` 後 commit `docs/data`。

@@ -3,19 +3,18 @@ const show = (el, on = true) => el.classList.toggle('hidden', !on);
 const screens = ['loading', 'setup', 'lobby', 'game', 'results'];
 const go = name => screens.forEach(s => show($('#' + s), s === name));
 const audio = $('#audio');
-const renderer = new Chart.Renderer($('#playfield'));
-
-const MODE_HINT = {
-  audio: '播一段官方 preview 音樂，猜曲名。',
-  chart: '完全靜音，只看譜面捲動，從 pattern 認出是哪首歌。',
-  hybrid: '前半段只有譜面，之後才放音樂。一般計分：只看譜答對 2 分、有音樂後 1 分。',
-};
 
 // ---------- settings ----------
-const DEFAULTS = { pool: 'pp', mode: 'audio', section: 'preview', scoring: 'normal', keys: '4', topN: '250', srMin: 0, srMax: 15, rounds: '10', limit: '20', volume: 0.25, speed: 700 };
+const DEFAULTS = { pool: 'pp', scoring: 'normal', keys: '4', topN: '250', rounds: '10', limit: '20', volume: 0.25 };
 let settings = { ...DEFAULTS };
-try { Object.assign(settings, JSON.parse(localStorage.getItem('mmq-settings') || '{}')); } catch {}
+try {
+  const saved = JSON.parse(localStorage.getItem('mmq-settings') || '{}');
+  for (const k of Object.keys(DEFAULTS)) if (k in saved) settings[k] = saved[k];
+} catch {}
 const save = () => { try { localStorage.setItem('mmq-settings', JSON.stringify(settings)); } catch {} };
+// shared settings (synced in multiplayer) vs. local-only ones (volume)
+const SHARED_KEYS = ['pool', 'scoring', 'keys', 'topN', 'rounds', 'limit'];
+const onSettingsChanged = () => { if (window.MP && MP.active) MP.onSettingsChanged(); };
 
 function bindSettings() {
   document.querySelectorAll('.seg').forEach(seg => {
@@ -27,19 +26,53 @@ function bindSettings() {
     });
     paint();
   });
-  for (const id of ['topN', 'srMin', 'srMax', 'rounds', 'limit', 'volume', 'speed']) {
+  for (const id of ['topN', 'rounds', 'limit', 'volume']) {
     const el = $('#' + id);
     el.value = settings[id];
     el.addEventListener('input', () => {
-      settings[id] = el.type === 'range' || el.type === 'number' ? Number(el.value) : el.value;
+      settings[id] = el.type === 'range' ? Number(el.value) : el.value;
       save(); refreshSetupInfo(); onSettingsChanged();
       if (id === 'volume') audio.volume = settings.volume;
-      if (id === 'speed') renderer.visibleMs = settings.speed;
     });
   }
   audio.volume = settings.volume;
-  renderer.visibleMs = settings.speed;
 }
+
+// ---------- audio (phones) ----------
+// osu! previews are Ogg Vorbis; some iPhones can't decode that at all.
+const OGG_OK = !!audio.canPlayType('audio/ogg; codecs="vorbis"');
+// Phones only let sound start from a tap. Playing a silent clip on the first tap "unlocks" this
+// <audio> element so later questions can start from a timer (multiplayer countdown).
+const SILENT = (() => {
+  const n = 800, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 8000, true); v.setUint32(28, 16000, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+})();
+let audioUnlocked = false;
+function unlockAudio() {
+  if (audioUnlocked || !audio.paused) return;
+  if (!audio.getAttribute('src')) audio.src = SILENT;
+  const wasMuted = audio.muted;
+  audio.muted = true;
+  audio.play().then(() => {
+    audioUnlocked = true;
+    if (audio.src === SILENT) audio.pause();
+  }).catch(() => {}).finally(() => { audio.muted = wasMuted; });
+}
+['pointerdown', 'keydown', 'touchend'].forEach(ev => document.addEventListener(ev, unlockAudio, { capture: true }));
+
+// play, and if the browser still refuses, offer a big "tap for sound" button
+function playAudio(fromSec = 0) {
+  try { audio.currentTime = fromSec; } catch {}
+  return audio.play().then(() => show($('#tapForSound'), false)).catch(e => {
+    if (e && e.name === 'NotAllowedError') show($('#tapForSound'));
+  });
+}
+function stopAudio() { audio.pause(); show($('#tapForSound'), false); }
+$('#tapForSound').onclick = () => { audio.play().then(() => show($('#tapForSound'), false)).catch(() => {}); };
 
 // ---------- pool & answers ----------
 let POOL = [];
@@ -56,31 +89,26 @@ function buildSongs() {
   const map = new Map();
   for (const s of POOL) {
     const key = norm(s.title) + '|' + norm(s.artist);
-    if (!map.has(key)) map.set(key, { title: s.title, titleU: s.titleU, artist: s.artist, artistU: s.artistU, plays: 0,
-      search: [s.title, s.titleU, s.artist, s.artistU].join(' ').toLowerCase() });
+    if (!map.has(key)) map.set(key, { title: s.title, titleU: s.titleU, artist: s.artist, artistU: s.artistU, sources: new Set(), rank: INF });
     const e = map.get(key);
-    e.rank = Math.min(e.rank ?? INF, POOL_ORDER.mixed(s));
+    if (s.source) e.sources.add(s.source);
+    e.rank = Math.min(e.rank, POOL_ORDER.mixed(s));
   }
-  SONGS = [...map.values()].sort((a, b) => a.rank - b.rank);
+  SONGS = [...map.values()].map(e => {
+    const sources = [...e.sources];
+    return { ...e, source: sources.join(' / '),
+      search: [e.title, e.titleU, e.artist, e.artistU, ...sources].join(' ').toLowerCase(),
+      nsearch: norm([e.title, e.titleU, e.artist, e.artistU, ...sources].join(' ')) };
+  }).sort((a, b) => a.rank - b.rank);
 }
 
-// shared settings (synced in multiplayer) vs. local-only ones (volume, speed)
-const SHARED_KEYS = ['pool', 'mode', 'section', 'scoring', 'keys', 'topN', 'srMin', 'srMax', 'rounds', 'limit'];
-
-// scoring: "normal" = 1 point (hybrid: 2 if answered before the music), "speed" = 10 -> 2 the later you answer
-function pointsFor(correct, elapsedMs, limitMs, mode, scoring) {
+// scoring: "normal" = 1 point, "speed" = 10 -> 2 the later you answer
+function pointsFor(correct, elapsedMs, limitMs, scoring) {
   if (!correct) return 0;
   if (scoring === 'speed') return Math.max(2, Math.round(10 - 8 * Math.min(1, Math.max(0, elapsedMs) / limitMs)));
-  return mode === 'hybrid' && elapsedMs < limitMs / 2 ? 2 : 1;
+  return 1;
 }
-const maxPoints = (rounds, mode, scoring) => rounds * (scoring === 'speed' ? 10 : mode === 'hybrid' ? 2 : 1);
-
-// pick which part of the chart to show: the preview part (synced with the music) or another section
-function questionNotes(chart, mode, section, r = Math.random()) {
-  if (mode === 'chart' && section === 'random' && chart.sections.length) return { notes: chart.sections[Math.floor(r * chart.sections.length)], synced: false };
-  return { notes: chart.notes, synced: chart.synced };
-}
-const onSettingsChanged = () => { if (window.MP && MP.active) MP.onSettingsChanged(); };
+const maxPoints = (rounds, scoring) => rounds * (scoring === 'speed' ? 10 : 1);
 
 const INF = Infinity;
 const POOL_ORDER = {
@@ -93,7 +121,7 @@ function sortedPool(kind) {
   if (!sortedCache[kind]) {
     const f = POOL_ORDER[kind] || POOL_ORDER.pp;
     const ranked = POOL.filter(s => f(s) < INF).sort((a, b) => f(a) - f(b));
-    sortedCache[kind] = ranked.length ? ranked : POOL; // data built before ranks existed
+    sortedCache[kind] = ranked.length ? ranked : POOL;
   }
   return sortedCache[kind];
 }
@@ -103,14 +131,11 @@ function eligibleSets(st = settings) {
   const keyOk = d => st.keys === 'any' || d.keys === Number(st.keys);
   const ppOnly = st.pool === 'pp';
   const top = sortedPool(st.pool).filter(s => s.diffs.some(d => keyOk(d) && (!ppOnly || d.pp))).slice(0, Number(st.topN));
-  const out = [];
-  for (const s of top) {
-    let diffs = s.diffs.filter(d => keyOk(d) && (st.mode === 'audio' || (d.sr >= st.srMin && d.sr <= st.srMax)));
-    // in the pp pool, prefer the difficulties people actually farm
-    if (ppOnly && diffs.some(d => d.pp)) diffs = diffs.filter(d => d.pp);
-    if (diffs.length) out.push({ set: s, diffs });
-  }
-  return out;
+  return top.map(s => {
+    let diffs = s.diffs.filter(keyOk);
+    if (ppOnly && diffs.some(d => d.pp)) diffs = diffs.filter(d => d.pp); // the difficulty people actually farm
+    return { set: s, diffs };
+  });
 }
 
 function checkAnswer(text, set) {
@@ -136,15 +161,13 @@ const POOL_HINT = {
 };
 
 function refreshSetupInfo() {
-  $('#modeHint').textContent = MODE_HINT[settings.mode];
   $('#poolHint').textContent = POOL_HINT[settings.pool] || '';
-  show($('#sectionField'), settings.mode === 'chart');
   const n = eligibleSets().length;
   $('#poolInfo').textContent = `符合條件的圖組：${n} 組` + (n < Number(settings.rounds) ? '（不夠出題，放寬條件看看）' : '');
   $('#startBtn').disabled = n === 0;
 }
 
-// ---------- game ----------
+// ---------- single player ----------
 let game = null;
 const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.random() * (i + 1) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
@@ -160,7 +183,7 @@ function startGame() {
 }
 
 let round = null; // per-question state
-let tickRaf = 0;
+let tickTimer = 0;
 
 async function nextRound() {
   stopRound();
@@ -173,24 +196,12 @@ async function nextRound() {
   $('#prompt').textContent = '載入中…';
   $('#timerBar').style.width = '100%';
 
-  const mode = settings.mode;
-  round = { mode, set, diff, phase: mode === 'hybrid' ? 1 : 0, chart: null, done: false };
+  round = { set, diff, done: false };
   const myRound = round;
-
   try {
-    const jobs = [];
-    // always load the preview so the reveal can play it, but only wait for it when the question needs it
     audio.src = `https://b.ppy.sh/preview/${set.id}.mp3`;
     audio.loop = true;
-    if (mode !== 'chart') {
-      jobs.push(new Promise((res, rej) => {
-        audio.oncanplaythrough = () => res(); audio.onerror = () => rej(new Error('音檔載入失敗'));
-      }));
-    }
-    if (mode !== 'audio') {
-      jobs.push(loadChart(set.id, diff.id).then(c => { myRound.chart = c; }));
-    }
-    await Promise.all(jobs);
+    await new Promise((res, rej) => { audio.oncanplaythrough = () => res(); audio.onerror = () => rej(new Error('音檔載入失敗')); });
   } catch (e) {
     if (myRound !== round) return;
     $('#prompt').textContent = `${e.message}，跳過這題`;
@@ -199,104 +210,41 @@ async function nextRound() {
   }
   if (myRound !== round) return;
 
-  if (round.chart) {
-    const q = questionNotes(round.chart, mode, settings.section);
-    round.synced = q.synced;
-    round.chartStart = 0; // excerpts are pre-cut to start at their section
-    renderer.load({ keys: round.chart.keys, notes: q.notes });
-  }
-  $('#prompt').textContent = mode === 'audio' ? '這是什麼歌？' : mode === 'chart' ? '這張譜是哪首歌？' : '這張譜是哪首歌？（還沒放音樂）';
+  $('#prompt').textContent = '這是什麼歌？';
   $('#answer').disabled = false; $('#answer').focus();
-  show($('#revealAudioBtn'), mode === 'hybrid');
-  beginPlayback();
-
+  playAudio(0);
   round.t0 = performance.now();
   round.limitMs = Number(settings.limit) * 1000;
-  const tick = () => {
-    if (!round || round.done) return;
+  tickTimer = setInterval(() => {
+    if (!round || round.done) return clearInterval(tickTimer);
     const el = performance.now() - round.t0;
     $('#timerBar').style.width = Math.max(0, 100 - el / round.limitMs * 100) + '%';
-    if (round.phase === 1 && el >= round.limitMs / 2) enterPhase2();
-    if (el >= round.limitMs) return answer(null);
-    tickRaf = requestAnimationFrame(tick);
-  };
-  tick();
-}
-
-const chartCache = new Map();
-async function loadChart(setId, diffId) {
-  if (!chartCache.has(setId)) {
-    chartCache.set(setId, fetch(`data/charts/${setId}.json`).then(r => { if (!r.ok) throw new Error('譜面載入失敗'); return r.json(); }));
-  }
-  let all;
-  try { all = await chartCache.get(setId); } catch (e) { chartCache.delete(setId); throw e; }
-  const ex = all[diffId];
-  if (!ex) throw new Error('譜面載入失敗');
-  const conv = arr => arr.map(([col, time, len]) => ({ col, time, end: time + len }));
-  return { keys: ex.k, synced: !!ex.s, notes: conv(ex.n), sections: (ex.w || []).map(conv) };
-}
-
-function silentClock() {
-  const start = round.chartStart, t0 = performance.now(), win = 10000;
-  return () => start + ((performance.now() - t0) % win);
-}
-
-function beginPlayback() {
-  const { mode } = round;
-  show($('#audioOnly'), mode === 'audio');
-  show($('.speed'), mode !== 'audio');
-  show($('#phaseTag'), mode === 'hybrid');
-  if (mode === 'audio') { renderer.clear(); audio.currentTime = 0; audio.play().catch(() => {}); }
-  else if (mode === 'chart') renderer.start(silentClock());
-  else if (round.phase === 1) { $('#phaseTag').textContent = '🔇 只有譜面 · 2 分'; renderer.start(silentClock()); }
-  else startSyncedChart();
-}
-
-function startSyncedChart() {
-  $('#phaseTag').textContent = '🔊 有音樂了 · 1 分';
-  audio.currentTime = 0; audio.play().catch(() => {});
-  if (round.synced) renderer.start(() => round.chartStart + audio.currentTime * 1000);
-  else renderer.start(silentClock());
-}
-
-function enterPhase2() {
-  if (!round || round.phase !== 1) return;
-  round.phase = 2;
-  show($('#revealAudioBtn'), false);
-  $('#prompt').textContent = '這張譜是哪首歌？';
-  startSyncedChart();
+    if (el >= round.limitMs) answer(null);
+  }, 50);
 }
 
 function stopRound() {
-  cancelAnimationFrame(tickRaf);
-  audio.pause(); audio.oncanplaythrough = null; audio.onerror = null;
-  renderer.stop();
+  clearInterval(tickTimer);
+  stopAudio(); audio.oncanplaythrough = null; audio.onerror = null;
 }
 
 function answer(text) {
   if (!round || round.done) return;
   round.done = true;
-  cancelAnimationFrame(tickRaf);
+  clearInterval(tickTimer);
   hideSuggest();
   const { set, diff } = round;
   const correct = checkAnswer(text, set);
   const elapsed = performance.now() - round.t0;
-  const pts = pointsFor(correct, elapsed, round.limitMs, round.mode, settings.scoring);
+  const pts = pointsFor(correct, elapsed, round.limitMs, settings.scoring);
   game.score += pts;
   game.history.push({ set, diff, correct, pts, guess: text });
   $('#scoreLabel').textContent = game.score;
 
-  // reveal: let the music play (and the chart sync to it if possible)
-  if (round.mode !== 'audio' && audio.paused) {
-    // switch to the preview part so the chart lines up with the music
-    if (round.chart) { renderer.load(round.chart); round.synced = round.chart.synced; }
-    round.phase = 2; show($('#phaseTag'), false); startSyncedChart();
-  }
-  show($('#phaseTag'), false);
   show($('#questionArea'), false); show($('#revealArea'));
   const v = $('#verdict');
   v.className = 'verdict ' + (correct ? 'good' : 'bad');
-  v.textContent = correct ? `答對！ +${pts}（${(elapsed / 1000).toFixed(1)} 秒）` : text == null ? (performance.now() - round.t0 >= round.limitMs ? '時間到' : '放棄') : `答錯（你答：${text}）`;
+  v.textContent = correct ? `答對！ +${pts}（${(elapsed / 1000).toFixed(1)} 秒）` : text == null ? (elapsed >= round.limitMs ? '時間到' : '放棄') : `答錯（你答：${text}）`;
   fillRevealCard(set, diff);
   $('#nextBtn').focus();
 }
@@ -305,7 +253,7 @@ function finish() {
   stopRound();
   round = null;
   go('results');
-  const max = maxPoints(game.picks.length, settings.mode, settings.scoring);
+  const max = maxPoints(game.picks.length, settings.scoring);
   const correctN = game.history.filter(h => h.correct).length;
   $('#finalScore').textContent = `${game.score} / ${max} 分 · 答對 ${correctN} / ${game.picks.length} 題`;
   const ol = $('#history'); ol.innerHTML = '';
@@ -322,7 +270,7 @@ function finish() {
   }
 }
 
-// ---------- autocomplete ----------
+// ---------- autocomplete (title, artist or source) ----------
 let sugg = [], sel = -1;
 function hideSuggest() { show($('#suggest'), false); sugg = []; sel = -1; }
 function renderSuggest() {
@@ -332,7 +280,7 @@ function renderSuggest() {
     if (i === sel) li.className = 'sel';
     li.textContent = s.title;
     const sm = document.createElement('small');
-    sm.textContent = [s.titleU !== s.title ? s.titleU : '', s.artist].filter(Boolean).join(' · ');
+    sm.textContent = [s.titleU !== s.title ? s.titleU : '', s.artist, s.source ? `出自 ${s.source}` : ''].filter(Boolean).join(' · ');
     li.append(sm);
     li.addEventListener('mousedown', e => { e.preventDefault(); $('#answer').value = s.title; hideSuggest(); submitAnswer(s.title); });
     ul.append(li);
@@ -343,7 +291,7 @@ $('#answer').addEventListener('input', e => {
   const q = e.target.value.trim().toLowerCase();
   if (q.length < 1) return hideSuggest();
   const nq = norm(q);
-  sugg = SONGS.filter(s => s.search.includes(q) || norm(s.title).includes(nq) || norm(s.titleU).includes(nq)).slice(0, 10);
+  sugg = SONGS.filter(s => s.search.includes(q) || (nq && s.nsearch.includes(nq))).slice(0, 12);
   sel = sugg.length ? 0 : -1;
   renderSuggest();
 });
@@ -364,11 +312,12 @@ $('#answer').addEventListener('blur', () => setTimeout(hideSuggest, 100));
 $('#startBtn').onclick = startGame;
 $('#submitBtn').onclick = () => { const v = $('#answer').value.trim(); if (v) submitAnswer(v); };
 $('#skipBtn').onclick = () => answer(null);
-$('#revealAudioBtn').onclick = enterPhase2;
-$('#replayBtn').onclick = () => { if (round && !round.done) { renderer.stop(); audio.pause(); beginPlayback(); } };
+$('#replayBtn').onclick = () => { if (round && !round.done) playAudio(0); };
 $('#nextBtn').onclick = () => (window.MP && MP.active ? MP.next() : nextRound());
 $('#againBtn').onclick = () => {
-  if (window.MP && MP.active) return MP.again(); show($('#scoreboard'), false); go('setup'); refreshSetupInfo(); };
+  if (window.MP && MP.active) return MP.again();
+  show($('#scoreboard'), false); go('setup'); refreshSetupInfo();
+};
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.repeat && !(window.MP && MP.active) && round && round.done && !e.target.closest('button, input')) { e.preventDefault(); nextRound(); }
 });
@@ -376,6 +325,7 @@ document.addEventListener('keydown', e => {
 // ---------- boot ----------
 async function boot() {
   bindSettings();
+  show($('#formatWarn'), !OGG_OK);
   go('loading');
   try {
     const r = await fetch('data/pool.json');

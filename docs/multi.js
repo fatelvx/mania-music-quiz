@@ -363,8 +363,7 @@ window.MP = (() => {
     state.used.push(e.set.id);
     state.round = {
       n: (state.round ? state.round.n : 0) + 1, setId: e.set.id, diffId: d.id,
-      startAt: Date.now() + LEAD_MS, limitMs: Number(st.limit) * 1000, mode: st.mode, scoring: st.scoring, answered: [],
-      secR: st.mode === 'chart' && st.section === 'random' ? Math.random() : null, // same section for everyone
+      startAt: Date.now() + LEAD_MS, limitMs: Number(st.limit) * 1000, scoring: st.scoring, answered: [],
     };
     state.reveal = null; state.phase = 'question';
     secret = { answers: {} };
@@ -400,7 +399,7 @@ window.MP = (() => {
     for (const p of state.players) {
       const a = secret.answers[p.id];
       const correct = !!a && checkAnswer(a.text, set);
-      const pts = pointsFor(correct, a ? a.elapsed : 0, r.limitMs, r.mode, r.scoring);
+      const pts = pointsFor(correct, a ? a.elapsed : 0, r.limitMs, r.scoring);
       p.score += pts;
       answers[p.id] = { text: a ? a.text : null, correct, pts, ms: a ? Math.round(a.elapsed) : null };
     }
@@ -423,33 +422,21 @@ window.MP = (() => {
   function stopPlayback() {
     if (playback) clearInterval(playback.iv);
     playback = null;
-    audio.pause(); renderer.stop();
+    stopAudio(); audio.onerror = null;
     show($('#countdown'), false);
   }
 
   function startPlayback(r) {
     stopPlayback();
-    const pb = playback = { r, n: r.n, phase: r.mode === 'hybrid' ? 1 : 0, started: false, chart: null, iv: 0 };
-    renderer.chart = null; renderer.clear();
+    const pb = playback = { r, n: r.n, started: false, iv: 0 };
     audio.src = `https://b.ppy.sh/preview/${r.setId}.mp3`;
     audio.loop = true;
-    if (r.mode !== 'audio') {
-      loadChart(r.setId, r.diffId).then(c => {
-        if (playback !== pb) return;
-        pb.chart = c;
-        const q = questionNotes(c, r.mode, r.secR != null ? 'random' : 'preview', r.secR ?? 0);
-        renderer.load({ keys: c.keys, notes: q.notes });
-      })
-        .catch(() => { if (playback === pb) $('#prompt').textContent = '譜面載入失敗，只能用聽的了'; });
-    }
-    show($('#audioOnly'), r.mode === 'audio');
-    show($('.speed'), r.mode !== 'audio');
-    show($('#phaseTag'), r.mode === 'hybrid');
+    audio.onerror = () => { if (playback === pb) $('#prompt').textContent = OGG_OK ? '這題的音檔載入失敗了' : '你的瀏覽器播不了這個音檔格式（Ogg）'; };
     show($('#questionArea')); show($('#revealArea'), false);
     $('#answer').value = ''; $('#answer').disabled = false; hideSuggest();
     $('#mpMyAnswer').textContent = '';
-    $('#prompt').textContent = r.mode === 'audio' ? '這是什麼歌？' : '這張譜是哪首歌？' + (r.mode === 'hybrid' ? '（還沒放音樂）' : '');
-    // timers keep running in background tabs (requestAnimationFrame doesn't); the chart itself still draws via rAF
+    $('#prompt').textContent = '這是什麼歌？';
+    // timers keep running in background tabs (requestAnimationFrame doesn't)
     const tick = () => {
       if (playback !== pb) return clearInterval(pb.iv);
       const el = Date.now() - (r.startAt - offset);
@@ -458,40 +445,12 @@ window.MP = (() => {
         $('#timerBar').style.width = '100%';
       } else {
         show($('#countdown'), false);
-        if (!pb.started) { pb.started = true; begin(pb, el); $('#answer').focus(); }
-        if (pb.phase === 1 && el >= r.limitMs / 2) phase2(pb, el);
+        if (!pb.started) { pb.started = true; playAudio((el / 1000) % (audio.duration || 10)); $('#answer').focus(); }
         $('#timerBar').style.width = Math.max(0, 100 - el / r.limitMs * 100) + '%';
       }
     };
     pb.iv = setInterval(tick, 50);
     tick();
-  }
-
-  const localStart = pb => pb.r.startAt - offset;
-  function playAudioAt(sec) {
-    const d = audio.duration || 10;
-    try { audio.currentTime = sec % d; } catch {}
-    audio.play().catch(() => {});
-  }
-  function chartClockSilent(pb, from) { return () => ((Date.now() - from) % 10000 + 10000) % 10000; }
-  function chartClockSynced(pb) {
-    return pb.chart && pb.chart.synced ? () => audio.currentTime * 1000 : chartClockSilent(pb, localStart(pb));
-  }
-
-  function begin(pb, el) {
-    const r = pb.r;
-    if (r.mode === 'audio') { renderer.clear(); playAudioAt(el / 1000); }
-    else if (r.mode === 'chart' || pb.phase === 1) {
-      $('#phaseTag').textContent = '🔇 只有譜面 · 2 分';
-      renderer.start(chartClockSilent(pb, localStart(pb)));
-    }
-  }
-  function phase2(pb, el) {
-    pb.phase = 2;
-    $('#phaseTag').textContent = '🔊 有音樂了 · 1 分';
-    $('#prompt').textContent = '這張譜是哪首歌？';
-    playAudioAt((el - pb.r.limitMs / 2) / 1000);
-    renderer.start(chartClockSynced(pb));
   }
 
   // ---------- rendering ----------
@@ -566,7 +525,6 @@ window.MP = (() => {
   }
 
   const POOL_NAME = { pp: 'pp 圖', classic: '經典', mixed: '混合' };
-  const MODE_NAME = { audio: '聽歌猜曲', chart: '看譜猜歌', hybrid: '先譜後歌' };
   function renderLobby() {
     stopPlayback();
     go('lobby');
@@ -587,16 +545,15 @@ window.MP = (() => {
       const s = state.settings;
       $('#lobbySummary').innerHTML = `<h2>房間設定</h2>
         <p>題庫：${POOL_NAME[s.pool]} · 前 ${s.topN} 組</p>
-        <p>模式：${MODE_NAME[s.mode]} · ${s.keys === 'any' ? '全部鍵數' : s.keys + 'K'}${s.mode !== 'audio' ? ` · ${s.srMin}–${s.srMax}★` : ''}</p>
-        ${s.mode === 'chart' ? `<p>譜面：${s.section === 'random' ? '隨機段落' : 'preview 那段'}</p>` : ''}
+        <p>鍵數：${s.keys === 'any' ? '全部' : s.keys + 'K'}</p>
         <p>${s.rounds} 題 · 每題 ${s.limit} 秒 · ${s.scoring === 'speed' ? '搶答計分' : '一般計分'}</p>
-        <p class="hint">等房主開始…（音量、譜面速度在遊戲畫面可以自己調）</p>`;
+        <p class="hint">等房主開始…（音量可以在遊戲畫面自己調）</p>`;
     }
   }
 
   function renderQuestion() {
     go('game');
-    show($('#mpPlayers')); show($('#skipBtn'), false); show($('#replayBtn'), false); show($('#revealAudioBtn'), false);
+    show($('#mpPlayers')); show($('#skipBtn'), false); show($('#replayBtn'), false);
     if (!playback || playback.n !== state.round.n) startPlayback(state.round);
     playerRows($('#mpPlayers'), 'question');
   }
@@ -607,12 +564,8 @@ window.MP = (() => {
     const r = state.round;
     if (!playback || playback.n !== r.n) startPlayback(r); // joined during the reveal
     const pb = playback;
-    clearInterval(pb.iv); show($('#countdown'), false); show($('#phaseTag'), false);
+    clearInterval(pb.iv); show($('#countdown'), false);
     $('#timerBar').style.width = '0%';
-    if (r.mode !== 'audio' && audio.paused) {
-      if (pb.chart) renderer.load(pb.chart); // back to the preview part, synced with the music
-      pb.phase = 2; playAudioAt(0); renderer.start(chartClockSynced(pb));
-    }
     hideSuggest();
     show($('#questionArea'), false); show($('#revealArea'));
     const mine = state.reveal.answers[myId] || { text: null };
@@ -629,7 +582,7 @@ window.MP = (() => {
     stopPlayback();
     go('results');
     const ranked = [...state.players].sort((a, b) => b.score - a.score);
-    const max = maxPoints(state.total, state.settings.mode, state.settings.scoring);
+    const max = maxPoints(state.total, state.settings.scoring);
     $('#finalScore').textContent = `🏆 ${ranked[0] ? ranked[0].name : ''}（滿分 ${max}）`;
     const ol = $('#history');
     ol.innerHTML = ranked.map(p => `<li${p.id === myId ? ' class="ok"' : ''}>${esc(p.name)} — <b>${p.score}</b> 分</li>`).join('') +

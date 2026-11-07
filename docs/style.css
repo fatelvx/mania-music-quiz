@@ -64,19 +64,12 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   position: relative; background: #0c0b10; border: 1px solid var(--line); border-radius: 12px;
   width: 420px; max-width: 100%; overflow: hidden;
 }
-#playfield { display: block; width: 100%; height: auto; }
 .audio-only {
   position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
   background: #0c0b10; color: var(--muted);
 }
 .pulse { width: 90px; height: 90px; border-radius: 50%; background: var(--accent); opacity: .7; animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 50% { transform: scale(.75); opacity: .35; } }
-.phase-tag {
-  position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,.6); border: 1px solid var(--line);
-  padding: 2px 10px; border-radius: 99px; font-size: 13px;
-}
-.speed { position: absolute; bottom: 0; left: 0; right: 0; padding: 6px 12px; background: rgba(0,0,0,.55); display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
-.speed label { white-space: nowrap; }
 
 .side { flex: 1; min-width: 280px; }
 .prompt { font-size: 18px; margin: 0 0 12px; }
@@ -144,3 +137,15 @@ button.small { padding: 4px 10px; font-size: 13px; }
 .chat-log b.me { color: var(--accent); }
 .chat-log .sys { color: var(--muted); font-size: 12px; }
 #chatInput { width: 100%; border: 0; border-top: 1px solid var(--line); background: var(--panel-2); color: var(--text); padding: 9px 10px; font: inherit; outline: none; }
+.warn { border-color: #b8862b; background: #2a2414; margin-bottom: 16px; line-height: 1.7; }
+.playfield-wrap { min-height: 300px; }
+.tap-sound {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3;
+  font-size: 18px; padding: 14px 22px; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700;
+}
+@media (max-width: 640px) {
+  .playfield-wrap { min-height: 150px; width: 100%; }
+  .stage { gap: 14px; }
+  header { padding: 12px 16px; }
+  #scoreboard { gap: 10px; font-size: 13px; }
+}
