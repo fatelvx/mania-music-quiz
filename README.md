@@ -37,3 +37,5 @@ node serve.js          # 本機預覽 http://localhost:5173
 音樂直接從 `b.ppy.sh/preview/<setId>.mp3` 播放（實際格式是 Ogg Vorbis，舊版 iOS 不支援，網站會顯示提示）。
 
 更新題庫：重跑 `node build.js` 後 commit `docs/data`。
+
+部署前記得更新 `docs/index.html` 裡 css/js 連結的 `?v=` 版本號，玩家才不會拿到快取的舊檔案。
