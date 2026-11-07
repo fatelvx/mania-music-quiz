@@ -139,9 +139,23 @@ function eligibleSets(st = settings) {
   });
 }
 
+// The same song often exists in several versions: "C18H27NO3" vs "C18H27NO3(extend)",
+// "Bad Apple!! (REDALiCE Remix)", "Reaction feat. Slyleaf", "eternal reality - TV size -".
+// Compare the base title with all of that stripped, so any version of the song counts.
+function baseTitle(s) {
+  const b = (s || '')
+    .replace(/[\(\[（【「『<＜〈][^\)\]）】」』>＞〉]*[\)\]）】」』>＞〉]/g, ' ')  // (extend) [Extended Mix] （TV Size）
+    .replace(/\s+(feat\.?|ft\.?|featuring)\s.*$/i, ' ')                          // feat. someone
+    .replace(/\s[-~～]\s?[^-~～]*[-~～]\s*$/, ' ');                                // - TV size -
+  const n = norm(b);
+  return n || norm(s); // a title that is *only* a bracketed part keeps its full form
+}
+
 function checkAnswer(text, set) {
-  const g = text == null ? '' : norm(text);
-  return !!g && (g === norm(set.title) || g === norm(set.titleU));
+  if (text == null) return false;
+  const g = norm(text), gb = baseTitle(text);
+  if (!g) return false;
+  return [set.title, set.titleU].some(t => t && (g === norm(t) || gb === baseTitle(t)));
 }
 
 function fillRevealCard(set, diff) {
