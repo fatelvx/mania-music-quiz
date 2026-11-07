@@ -25,11 +25,11 @@ async function getToken() {
   return (await r.json()).access_token;
 }
 
-async function scanSets(token) {
+async function scanSets(token, status = 'ranked') {
   const sets = new Map();
   let cursor = null;
   while (sets.size < SCAN) {
-    const q = new URLSearchParams({ m: '3', s: 'ranked', sort: 'plays_desc' });
+    const q = new URLSearchParams({ m: '3', s: status, sort: 'plays_desc' });
     if (cursor) q.set('cursor_string', cursor);
     const r = await fetch('https://osu.ppy.sh/api/v2/beatmapsets/search?' + q, {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'x-api-version': '20240529' },
@@ -45,7 +45,7 @@ async function scanSets(token) {
       sets.set(s.id, {
         id: s.id, title: s.title, titleU: s.title_unicode, artist: s.artist, artistU: s.artist_unicode,
         source: s.source || '', creator: s.creator,
-        maniaPlays: diffs.reduce((a, d) => a + d.plays, 0), favs: s.favourite_count, diffs,
+        maniaPlays: diffs.reduce((a, d) => a + d.plays, 0), favs: s.favourite_count, status: s.status, diffs,
       });
     }
     process.stdout.write(`\rscanned ${sets.size} sets`);
@@ -153,15 +153,25 @@ async function main() {
     // pp diffs the set scan didn't know about (e.g. sets outside the scanned range)
     for (const pd of e.diffs.values()) if (!s.diffs.some(d => d.id === pd.id)) { const { users, status, ...d } = pd; s.diffs.push({ ...d, plays: 0, pp: users.size }); }
   });
+  // "loved" familiarity = plays of the mania diffs among loved sets (no pp, so they never show up in top plays)
+  const loved = (await scanSets(token, 'loved')).sort((a, b) => b.maniaPlays - a.maniaPlays).slice(0, POOL_SIZE);
+  loved.forEach((s, i) => {
+    const have = byId.get(s.id);
+    if (have) have.lovedRank = i + 1;
+    else { s.lovedRank = i + 1; byId.set(s.id, s); }
+  });
+
   const pool = [...byId.values()];
-  console.log(`classic ${classic.length} + pp ${ppList.length} -> ${pool.length} unique sets`);
+  console.log(`classic ${classic.length} + pp ${ppList.length} + loved ${loved.length} -> ${pool.length} unique sets`);
 
   for (const s of pool) for (const d of s.diffs) delete d.plays;
 
   // drop sets whose official preview audio is missing
   const noPreview = new Set();
   let pi = 0;
-  const withDiffs = pool.filter(s => s.diffs.length);
+  // compilations / practice packs: the preview is one song but the "title" is the pack name
+  const PACK = /\b(pack|vol\.?\s*\d+[a-z]?|volume\s*\d+|anthology|compilation|collection|marathon|mega ?mix|dan course|courses?)\b/i;
+  const withDiffs = pool.filter(s => s.diffs.length && !PACK.test(s.title));
   await Promise.all(Array.from({ length: 8 }, async () => {
     while (pi < withDiffs.length) {
       const s = withDiffs[pi++];

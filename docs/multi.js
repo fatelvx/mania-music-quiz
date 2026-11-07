@@ -524,7 +524,7 @@ window.MP = (() => {
     }).join('');
   }
 
-  const POOL_NAME = { pp: 'pp 圖', classic: '經典', mixed: '混合' };
+  const POOL_NAME = { pp: 'pp 圖', classic: '經典', loved: 'Loved', mixed: '混合' };
   function renderLobby() {
     stopPlayback();
     go('lobby');

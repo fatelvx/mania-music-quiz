@@ -113,8 +113,9 @@ const maxPoints = (rounds, scoring) => rounds * (scoring === 'speed' ? 10 : 1);
 const INF = Infinity;
 const POOL_ORDER = {
   pp: s => s.ppRank ?? INF,          // how many sampled players farm it
-  classic: s => s.playRank ?? INF,   // total plays of its mania diffs
-  mixed: s => Math.min(s.ppRank ?? INF, s.playRank ?? INF),
+  classic: s => s.playRank ?? INF,   // total plays of its mania diffs (ranked)
+  loved: s => s.lovedRank ?? INF,    // same, among loved sets
+  mixed: s => Math.min(s.ppRank ?? INF, s.playRank ?? INF, s.lovedRank ?? INF),
 };
 const sortedCache = {};
 function sortedPool(kind) {
@@ -156,8 +157,9 @@ const submitAnswer = v => (window.MP && MP.active ? MP.submit(v) : answer(v));
 
 const POOL_HINT = {
   pp: '從排行 1～10000 名抽樣玩家，看大家 top plays 裡最常出現哪些圖。最多人在刷的就是這些。',
-  classic: '依 mania 難度的總遊玩次數排序，老牌經典圖比較多。',
-  mixed: '兩邊都算，排名取較前面的那一個。',
+  classic: '依 mania 難度的總遊玩次數排序（ranked），老牌經典圖比較多。',
+  loved: 'Loved 圖，依 mania 難度的總遊玩次數排序。',
+  mixed: 'pp、經典、Loved 三種都算，排名取最前面的那一個。'
 };
 
 function refreshSetupInfo() {
