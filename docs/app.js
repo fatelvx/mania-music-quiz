@@ -32,10 +32,16 @@ function bindSettings() {
     el.addEventListener('input', () => {
       settings[id] = el.type === 'range' ? Number(el.value) : el.value;
       save(); refreshSetupInfo(); onSettingsChanged();
-      if (id === 'volume') audio.volume = settings.volume;
+      if (id === 'volume') setVolume(settings.volume);
     });
   }
-  audio.volume = settings.volume;
+  $('#volumeGame').addEventListener('input', e => { settings.volume = Number(e.target.value); save(); setVolume(settings.volume); });
+  setVolume(settings.volume);
+}
+
+function setVolume(v) {
+  audio.volume = v;
+  $('#volume').value = v; $('#volumeGame').value = v;
 }
 
 // ---------- audio (phones) ----------
@@ -89,16 +95,18 @@ function buildSongs() {
   const map = new Map();
   for (const s of POOL) {
     const key = norm(s.title) + '|' + norm(s.artist);
-    if (!map.has(key)) map.set(key, { title: s.title, titleU: s.titleU, artist: s.artist, artistU: s.artistU, sources: new Set(), rank: INF });
+    if (!map.has(key)) map.set(key, { title: s.title, titleU: s.titleU, artist: s.artist, artistU: s.artistU, sources: new Set(), mappers: new Set(), rank: INF });
     const e = map.get(key);
     if (s.source) e.sources.add(s.source);
+    if (s.creator) e.mappers.add(s.creator);
     e.rank = Math.min(e.rank, POOL_ORDER.mixed(s));
   }
   SONGS = [...map.values()].map(e => {
-    const sources = [...e.sources];
-    return { ...e, source: sources.join(' / '),
-      search: [e.title, e.titleU, e.artist, e.artistU, ...sources].join(' ').toLowerCase(),
-      nsearch: norm([e.title, e.titleU, e.artist, e.artistU, ...sources].join(' ')) };
+    const sources = [...e.sources], mappers = [...e.mappers];
+    const all = [e.title, e.titleU, e.artist, e.artistU, ...sources, ...mappers];
+    return { ...e, source: sources.join(' / '), mappers,
+      ntitles: [norm(e.title), norm(e.titleU), baseTitle(e.title), baseTitle(e.titleU)],
+      search: all.join(' ').toLowerCase(), nsearch: norm(all.join(' ')) };
   }).sort((a, b) => a.rank - b.rank);
 }
 
@@ -151,6 +159,13 @@ function baseTitle(s) {
   return n || norm(s); // a title that is *only* a bracketed part keeps its full form
 }
 
+// one key per song (any version / cover), so a game never asks the same song twice
+const songKey = set => baseTitle(set.title);
+function uniqueSongs(entries) {
+  const seen = new Set();
+  return entries.filter(e => { const k = songKey(e.set); if (seen.has(k)) return false; seen.add(k); return true; });
+}
+
 function checkAnswer(text, set) {
   if (text == null) return false;
   const g = norm(text), gb = baseTitle(text);
@@ -188,11 +203,11 @@ let game = null;
 const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.random() * (i + 1) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
 function startGame() {
-  const picks = shuffle(eligibleSets()).slice(0, Number(settings.rounds)).map(({ set, diffs }) => ({
+  const picks = uniqueSongs(shuffle(eligibleSets())).slice(0, Number(settings.rounds)).map(({ set, diffs }) => ({
     set, diff: diffs[Math.random() * diffs.length | 0],
   }));
   game = { picks, idx: -1, score: 0, history: [] };
-  show($('#scoreboard'));
+  show($('#scoreboard')); show($('#quitBtn'));
   $('#scoreLabel').textContent = '0';
   go('game');
   nextRound();
@@ -268,6 +283,7 @@ function answer(text) {
 function finish() {
   stopRound();
   round = null;
+  show($('#quitBtn'), false);
   go('results');
   const max = maxPoints(game.picks.length, settings.scoring);
   const correctN = game.history.filter(h => h.correct).length;
@@ -287,7 +303,7 @@ function finish() {
 }
 
 // ---------- autocomplete (title, artist or source) ----------
-let sugg = [], sel = -1;
+let sugg = [], sel = -1, lastQuery = '';
 function hideSuggest() { show($('#suggest'), false); sugg = []; sel = -1; }
 function renderSuggest() {
   const ul = $('#suggest'); ul.innerHTML = '';
@@ -296,9 +312,11 @@ function renderSuggest() {
     if (i === sel) li.className = 'sel';
     li.textContent = s.title;
     const sm = document.createElement('small');
-    sm.textContent = [s.titleU !== s.title ? s.titleU : '', s.artist, s.source ? `出自 ${s.source}` : ''].filter(Boolean).join(' · ');
+    const mapperHit = lastQuery && s.mappers.find(m => m.toLowerCase().includes(lastQuery));
+    sm.textContent = [s.titleU !== s.title ? s.titleU : '', s.artist, s.source ? `出自 ${s.source}` : '', mapperHit ? `map by ${mapperHit}` : ''].filter(Boolean).join(' · ');
     li.append(sm);
-    li.addEventListener('mousedown', e => { e.preventDefault(); $('#answer').value = s.title; hideSuggest(); submitAnswer(s.title); });
+    // pointerdown fires immediately on touch too (mousedown comes late on phones, after the input blurs)
+    li.addEventListener('pointerdown', e => { e.preventDefault(); $('#answer').value = s.title; hideSuggest(); submitAnswer(s.title); });
     ul.append(li);
   });
   show(ul, sugg.length > 0);
@@ -307,7 +325,11 @@ $('#answer').addEventListener('input', e => {
   const q = e.target.value.trim().toLowerCase();
   if (q.length < 1) return hideSuggest();
   const nq = norm(q);
-  sugg = SONGS.filter(s => s.search.includes(q) || (nq && s.nsearch.includes(nq))).slice(0, 12);
+  lastQuery = q;
+  // exact title > title starts with > title contains > artist / source / mapper; then popularity
+  const score = s => s.ntitles.includes(nq) ? 0 : s.ntitles.some(t => t.startsWith(nq)) ? 1 : s.ntitles.some(t => t.includes(nq)) ? 2 : 3;
+  sugg = SONGS.filter(s => s.search.includes(q) || (nq && s.nsearch.includes(nq)))
+    .map(s => [score(s), s]).sort((a, b) => a[0] - b[0] || a[1].rank - b[1].rank).slice(0, 12).map(x => x[1]);
   sel = sugg.length ? 0 : -1;
   renderSuggest();
 });
@@ -329,6 +351,12 @@ $('#startBtn').onclick = startGame;
 $('#submitBtn').onclick = () => { const v = $('#answer').value.trim(); if (v) submitAnswer(v); };
 $('#skipBtn').onclick = () => answer(null);
 $('#replayBtn').onclick = () => { if (round && !round.done) playAudio(0); };
+$('#quitBtn').onclick = () => {
+  if (!round && !game) return;
+  stopRound(); round = null; game = null;
+  show($('#quitBtn'), false); show($('#scoreboard'), false);
+  go('setup'); refreshSetupInfo();
+};
 $('#nextBtn').onclick = () => (window.MP && MP.active ? MP.next() : nextRound());
 $('#againBtn').onclick = () => {
   if (window.MP && MP.active) return MP.again();

@@ -341,11 +341,11 @@ window.MP = (() => {
 
   function hostStart() {
     if (!amHost()) return;
-    const n = eligibleSets(state.settings).length;
+    const n = uniqueSongs(eligibleSets(state.settings)).length;
     if (!n) return alert('符合條件的圖組是 0，放寬設定看看');
     state.total = Math.min(Number(state.settings.rounds), n);
     state.players.forEach(p => { p.score = 0; });
-    state.history = []; state.used = []; state.round = null; state.reveal = null;
+    state.history = []; state.used = []; state.usedSongs = []; state.round = null; state.reveal = null;
     hostNext();
   }
 
@@ -353,7 +353,8 @@ window.MP = (() => {
     if (!amHost()) return;
     clearTimeout(hostTimer);
     const st = state.settings;
-    const cands = eligibleSets(st).filter(e => !state.used.includes(e.set.id));
+    const usedSongs = state.usedSongs || [];
+    const cands = eligibleSets(st).filter(e => !usedSongs.includes(songKey(e.set))); // never the same song twice
     if ((state.round && state.round.n >= state.total) || !cands.length) {
       state.phase = 'results'; state.round = null;
       return broadcastState();
@@ -361,6 +362,7 @@ window.MP = (() => {
     const e = cands[Math.random() * cands.length | 0];
     const d = e.diffs[Math.random() * e.diffs.length | 0];
     state.used.push(e.set.id);
+    state.usedSongs = [...usedSongs, songKey(e.set)];
     state.round = {
       n: (state.round ? state.round.n : 0) + 1, setId: e.set.id, diffId: d.id,
       startAt: Date.now() + LEAD_MS, limitMs: Number(st.limit) * 1000, scoring: st.scoring, answered: [],
@@ -583,7 +585,8 @@ window.MP = (() => {
     go('results');
     const ranked = [...state.players].sort((a, b) => b.score - a.score);
     const max = maxPoints(state.total, state.settings.scoring);
-    $('#finalScore').textContent = `🏆 ${ranked[0] ? ranked[0].name : ''}（滿分 ${max}）`;
+    const top = ranked.length ? ranked.filter(p => p.score === ranked[0].score).map(p => p.name) : [];
+    $('#finalScore').textContent = `🏆 ${top.join('、')}${top.length > 1 ? ' 同分' : ''}（${ranked.length ? ranked[0].score : 0} / ${max} 分）`;
     const ol = $('#history');
     ol.innerHTML = ranked.map(p => `<li${p.id === myId ? ' class="ok"' : ''}>${esc(p.name)} — <b>${p.score}</b> 分</li>`).join('') +
       '<li style="list-style:none;margin-top:12px"><small>題目：</small></li>' +

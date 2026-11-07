@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Mania Music Quiz</title>
-  <link rel="stylesheet" href="style.css?v=202611071836">
+  <link rel="stylesheet" href="style.css?v=202611071840">
 </head>
 <body>
   <header>
@@ -13,6 +13,7 @@
       <span id="roundLabel"></span>
       <span>分數 <b id="scoreLabel">0</b></span>
       <button id="mpLeaveHeader" class="small hidden">離開房間</button>
+      <button id="quitBtn" class="small hidden">結束</button>
     </div>
   </header>
 
@@ -140,12 +141,13 @@
         </div>
         <div id="countdown" class="countdown hidden"></div>
         <button id="tapForSound" class="tap-sound hidden">🔊 點一下開啟聲音</button>
+        <div class="vol"><label for="volumeGame">🔊 音量</label><input type="range" id="volumeGame" min="0" max="1" step="0.05"></div>
       </div>
       <div class="side">
         <div id="questionArea">
           <p class="prompt" id="prompt">這是什麼歌？</p>
           <div class="ac">
-            <input id="answer" autocomplete="off" placeholder="輸入曲名、歌手或出處（動畫 / 遊戲）都能搜">
+            <input id="answer" autocomplete="off" placeholder="輸入曲名、歌手、出處或 mapper 都能搜">
             <ul id="suggest" class="hidden"></ul>
           </div>
           <div class="btns">
@@ -194,8 +196,8 @@
 
   <audio id="audio" preload="auto"></audio>
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-  <script src="config.js?v=202611071836"></script>
-  <script src="app.js?v=202611071836"></script>
-  <script src="multi.js?v=202611071836"></script>
+  <script src="config.js?v=202611071840"></script>
+  <script src="app.js?v=202611071840"></script>
+  <script src="multi.js?v=202611071840"></script>
 </body>
 </html>
