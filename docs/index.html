@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mania Music Quiz</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>mania<span>quiz</span></h1>
+    <div id="scoreboard" class="hidden">
+      <span id="roundLabel"></span>
+      <span>分數 <b id="scoreLabel">0</b></span>
+    </div>
+  </header>
+
+  <!-- loading -->
+  <section id="loading" class="screen">
+    <p id="loadingText">載入題庫中…</p>
+    <div class="bar"><div id="loadingBar"></div></div>
+  </section>
+
+  <!-- setup -->
+  <section id="setup" class="screen hidden">
+    <div class="card">
+      <h2>設定</h2>
+      <div class="field">
+        <label>模式</label>
+        <div class="seg" data-name="mode">
+          <button data-v="audio">🎵 聽歌猜曲</button>
+          <button data-v="chart">👀 看譜猜歌</button>
+          <button data-v="hybrid">⚡ 先譜後歌</button>
+        </div>
+        <p class="hint" id="modeHint"></p>
+      </div>
+      <div class="field">
+        <label>鍵數</label>
+        <div class="seg" data-name="keys">
+          <button data-v="4">4K</button>
+          <button data-v="7">7K</button>
+          <button data-v="any">全部</button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>題庫（mania 最多人玩的前 N 組，越少越大眾）</label>
+          <select id="topN">
+            <option value="100">前 100</option>
+            <option value="250">前 250</option>
+            <option value="500">前 500</option>
+            <option value="1000">前 1000</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>星數範圍（看譜用的難度）</label>
+          <div class="inline">
+            <input type="number" id="srMin" min="0" max="15" step="0.5"> –
+            <input type="number" id="srMax" min="0" max="15" step="0.5"> ★
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>題數</label>
+          <select id="rounds">
+            <option>5</option><option>10</option><option>20</option><option>30</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>每題秒數</label>
+          <select id="limit">
+            <option>15</option><option>20</option><option>30</option><option>45</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>音量</label>
+          <input type="range" id="volume" min="0" max="1" step="0.05">
+        </div>
+      </div>
+      <p class="hint" id="poolInfo"></p>
+      <p class="hint" id="builtAt"></p>
+      <button id="startBtn" class="primary big">開始</button>
+    </div>
+  </section>
+
+  <!-- game -->
+  <section id="game" class="screen hidden">
+    <div class="timer"><div id="timerBar"></div></div>
+    <div class="stage">
+      <div class="playfield-wrap">
+        <canvas id="playfield" width="420" height="520"></canvas>
+        <div id="audioOnly" class="audio-only hidden">
+          <div class="pulse"></div>
+          <p>🎵 播放中…</p>
+        </div>
+        <div id="phaseTag" class="phase-tag hidden"></div>
+        <div class="speed">
+          <label>譜面速度</label>
+          <input type="range" id="speed" min="250" max="1500" step="50">
+        </div>
+      </div>
+      <div class="side">
+        <div id="questionArea">
+          <p class="prompt" id="prompt">這是什麼歌？</p>
+          <div class="ac">
+            <input id="answer" autocomplete="off" placeholder="輸入曲名（英文或原文都可）">
+            <ul id="suggest" class="hidden"></ul>
+          </div>
+          <div class="btns">
+            <button id="submitBtn" class="primary">送出</button>
+            <button id="revealAudioBtn" class="hidden">直接放音樂</button>
+            <button id="replayBtn">重播</button>
+            <button id="skipBtn">放棄</button>
+          </div>
+        </div>
+        <div id="revealArea" class="hidden">
+          <p id="verdict" class="verdict"></p>
+          <div class="reveal">
+            <img id="cover" alt="">
+            <div>
+              <p class="title" id="rTitle"></p>
+              <p class="artist" id="rArtist"></p>
+              <p class="meta" id="rMeta"></p>
+              <a id="rLink" target="_blank" rel="noopener">在 osu! 開啟 ↗</a>
+            </div>
+          </div>
+          <button id="nextBtn" class="primary">下一題 ⏎</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- results -->
+  <section id="results" class="screen hidden">
+    <div class="card">
+      <h2>結果</h2>
+      <p class="final" id="finalScore"></p>
+      <ol id="history"></ol>
+      <button id="againBtn" class="primary big">再來一局</button>
+    </div>
+  </section>
+
+  <audio id="audio" preload="auto"></audio>
+  <script src="chart.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
